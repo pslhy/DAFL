@@ -67,6 +67,8 @@
 #include <sys/ioctl.h>
 #include <sys/file.h>
 
+#include <math.h>
+
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined (__OpenBSD__)
 #  include <sys/sysctl.h>
 #endif /* __APPLE__ || __FreeBSD__ || __OpenBSD__ */
@@ -145,7 +147,8 @@ static s32 forksrv_pid,               /* PID of the fork server           */
            child_pid = -1,            /* PID of the fuzzed program        */
            out_dir_fd = -1;           /* FD of the lock file              */
 
-EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
+EXP_ST u8* trace_bits;                /* SHM with code coverage bitmap    */
+EXP_ST u32* dfg_bits;                 /* SHM with DFG coverage bitmap     */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -153,7 +156,8 @@ EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
 
 static u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
-static s32 shm_id;                    /* ID of the SHM region             */
+static s32 shm_id;                    /* ID of the SHM for code coverage  */
+static s32 shm_id_dfg;                /* ID of the SHM for DFG coverage   */
 
 static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
@@ -243,6 +247,7 @@ struct queue_entry {
   u8  cal_failed,                     /* Calibration failed?              */
       trim_done,                      /* Trimmed?                         */
       was_fuzzed,                     /* Had any fuzzing done yet?        */
+      handled_in_cycle,               /* Was handled in current cycle?    */
       passed_det,                     /* Deterministic stages passed?     */
       has_new_cov,                    /* Triggers new coverage?           */
       var_behavior,                   /* Variable behavior?               */
@@ -252,6 +257,9 @@ struct queue_entry {
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       exec_cksum;                     /* Checksum of the execution trace  */
 
+  u64 prox_score;                     /* Proximity score of the test case */
+  u32 entry_id;                       /* The ID assigned to the test case */
+
   u64 exec_us,                        /* Execution time (us)              */
       handicap,                       /* Number of queue cycles behind    */
       depth;                          /* Path depth                       */
@@ -259,15 +267,18 @@ struct queue_entry {
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
 
-  struct queue_entry *next,           /* Next element, if any             */
-                     *next_100;       /* 100 elements ahead               */
+  struct queue_entry *next;           /* Next element, if any             */
 
 };
 
 static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
                           *queue_cur, /* Current offset within the queue  */
-                          *queue_top, /* Top of the list                  */
-                          *q_prev100; /* Previous 100 marker              */
+                          *queue_last;/* Lastly added to the queue        */
+static struct queue_entry*
+  first_unhandled;                    /* 1st unhandled item in the queue  */
+
+static struct queue_entry*
+  shortcut_per_100[1024];             /* 100*N entries (replace next_100) */
 
 static struct queue_entry*
   top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
@@ -283,6 +294,13 @@ static u32 extras_cnt;                /* Total number of tokens read      */
 
 static struct extra_data* a_extras;   /* Automatically selected extras    */
 static u32 a_extras_cnt;              /* Total number of tokens available */
+
+static u64 max_prox_score = 0;        /* Maximum score of the seed queue  */
+static u64 min_prox_score = U64_MAX;  /* Minimum score of the seed queue  */
+static u64 total_prox_score = 0;      /* Sum of proximity scores          */
+static u64 avg_prox_score = 0;        /* Average of proximity scores      */
+static u32 no_dfg_schedule = 0;      /* No DFG-based seed scheduling     */
+static u32 t_x = 0;                   /* To test AFLGo's scheduling       */
 
 static u8* (*post_handler)(u8* buf, u32* len);
 
@@ -607,7 +625,7 @@ static u8* DI(u64 val) {
 }
 
 
-/* Describe float. Similar to the above, except with a single 
+/* Describe float. Similar to the above, except with a single
    static buffer. */
 
 static u8* DF(double val) {
@@ -783,9 +801,56 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 }
 
 
+/* Insert a test case to the queue, preserving the sorted order based on the
+ * proximity score. Updates global variables 'queue', 'shortcut_per_100', and
+ * 'first_unhandled'. */
+static void sorted_insert_to_queue(struct queue_entry* q) {
+
+  if (!queue) shortcut_per_100[0] = queue = q;
+  else {
+    struct queue_entry* q_probe;
+    u32 is_inserted = 0, i = 0;
+    first_unhandled = NULL;
+
+    // Special case handling when we have to insert at the front.
+    if (queue->prox_score < q->prox_score) {
+      q->next = queue;
+      queue = q;
+      is_inserted = 1;
+    }
+
+    // Traverse through the list to (1) update 'shortcut_per_100', (2) update
+    // 'first_unhandled', and (3) insert 'q' at the proper position.
+    q_probe = queue;
+    while (q_probe) {
+
+      if ((i % 100 == 0) && (i / 100 < 1024)) {
+        shortcut_per_100[(i / 100)] = q_probe;
+      }
+
+      if (!first_unhandled && !q_probe->handled_in_cycle)
+        first_unhandled = q_probe;
+
+      if (!is_inserted) {
+        // If reached the end or found the proper position, insert there.
+        if (!q_probe->next || q_probe->next->prox_score < q->prox_score) {
+          q->next = q_probe->next;
+          q_probe->next = q;
+          is_inserted = 1;
+        }
+      }
+
+      q_probe = q_probe->next;
+      i++;
+
+    }
+  }
+
+}
+
 /* Append new test case to the queue. */
 
-static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
+static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -793,29 +858,43 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det) {
   q->len          = len;
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
+  q->prox_score   = prox_score;
+  q->entry_id     = queued_paths;
 
   if (q->depth > max_depth) max_depth = q->depth;
 
-  if (queue_top) {
+  sorted_insert_to_queue(q);
 
-    queue_top->next = q;
-    queue_top = q;
-
-  } else q_prev100 = queue = queue_top = q;
-
+  queue_last = q;
   queued_paths++;
   pending_not_fuzzed++;
 
   cycles_wo_finds = 0;
 
-  if (!(queued_paths % 100)) {
+  last_path_time = get_cur_time();
 
-    q_prev100->next_100 = q;
-    q_prev100 = q;
+}
+
+/* Sort the queue based on the proximity score. Needed after the dry-run. */
+
+static void sort_queue(void) {
+
+  struct queue_entry *q_next, *q_cur;
+  u32 i;
+
+  // First, backup 'queue'. Then, reset 'queue' and 'shortcut_per_100'.
+  q_cur = queue;
+  queue = NULL;
+  for (i = 0; i < 1024; i++) shortcut_per_100[i] = NULL;
+
+  while (q_cur) {
+
+    q_next = q_cur->next;
+    q_cur->next = NULL; // To satisfy sorted_insert_to_queue()'s assumption
+    sorted_insert_to_queue(q_cur);
+    q_cur = q_next;
 
   }
-
-  last_path_time = get_cur_time();
 
 }
 
@@ -881,7 +960,7 @@ EXP_ST void read_bitmap(u8* fname) {
 
 /* Check if the current execution path brings anything new to the table.
    Update virgin bits to reflect the finds. Returns 1 if the only change is
-   the hit-count for a particular tuple; 2 if there are new tuples seen. 
+   the hit-count for a particular tuple; 2 if there are new tuples seen.
    Updates the map, so subsequent calls will always return 0.
 
    This function is called after every exec() on a fairly large buffer, so
@@ -1046,13 +1125,25 @@ static u32 count_non_255_bytes(u8* mem) {
 
 }
 
+static u64 compute_proximity_score(void) {
+
+  u64 prox_score = 0;
+  u32 i = DFG_MAP_SIZE;
+
+  while (i--) {
+    prox_score += dfg_bits[i];
+  }
+
+  return prox_score;
+
+}
 
 /* Destructively simplify trace by eliminating hit count information
    and replacing it with 0x80 or 0x01 depending on whether the tuple
    is hit or not. Called on every new crash or timeout, should be
    reasonably fast. */
 
-static const u8 simplify_lookup[256] = { 
+static const u8 simplify_lookup[256] = {
 
   [0]         = 1,
   [1 ... 255] = 128
@@ -1144,9 +1235,9 @@ EXP_ST void init_count_class16(void) {
 
   u32 b1, b2;
 
-  for (b1 = 0; b1 < 256; b1++) 
+  for (b1 = 0; b1 < 256; b1++)
     for (b2 = 0; b2 < 256; b2++)
-      count_class_lookup16[(b1 << 8) + b2] = 
+      count_class_lookup16[(b1 << 8) + b2] =
         (count_class_lookup8[b1] << 8) |
         count_class_lookup8[b2];
 
@@ -1213,6 +1304,7 @@ static inline void classify_counts(u32* mem) {
 static void remove_shm(void) {
 
   shmctl(shm_id, IPC_RMID, NULL);
+  shmctl(shm_id_dfg, IPC_RMID, NULL);
 
 }
 
@@ -1328,7 +1420,7 @@ static void cull_queue(void) {
 
       /* Remove all bits belonging to the current entry from temp_v. */
 
-      while (j--) 
+      while (j--)
         if (top_rated[i]->trace_mini[j])
           temp_v[j] &= ~top_rated[i]->trace_mini[j];
 
@@ -1354,6 +1446,7 @@ static void cull_queue(void) {
 EXP_ST void setup_shm(void) {
 
   u8* shm_str;
+  u8* shm_str_dfg;
 
   if (!in_bitmap) memset(virgin_bits, 255, MAP_SIZE);
 
@@ -1361,12 +1454,15 @@ EXP_ST void setup_shm(void) {
   memset(virgin_crash, 255, MAP_SIZE);
 
   shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+  shm_id_dfg = shmget(IPC_PRIVATE, sizeof(u32) * DFG_MAP_SIZE,
+                      IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
   atexit(remove_shm);
 
   shm_str = alloc_printf("%d", shm_id);
+  shm_str_dfg = alloc_printf("%d", shm_id_dfg);
 
   /* If somebody is asking us to fuzz instrumented binaries in dumb mode,
      we don't want them to detect instrumentation, since we won't be sending
@@ -1374,12 +1470,16 @@ EXP_ST void setup_shm(void) {
      later on, perhaps? */
 
   if (!dumb_mode) setenv(SHM_ENV_VAR, shm_str, 1);
+  if (!dumb_mode) setenv(SHM_ENV_VAR_DFG, shm_str_dfg, 1);
 
   ck_free(shm_str);
+  ck_free(shm_str_dfg);
 
   trace_bits = shmat(shm_id, NULL, 0);
-  
+  dfg_bits = shmat(shm_id_dfg, NULL, 0);
+
   if (trace_bits == (void *)-1) PFATAL("shmat() failed");
+  if (dfg_bits == (void *)-1) PFATAL("shmat() failed");
 
 }
 
@@ -1465,7 +1565,7 @@ static void read_testcases(void) {
     u8  passed_det = 0;
 
     free(nl[i]); /* not tracked */
- 
+
     if (lstat(fn, &st) || access(fn, R_OK))
       PFATAL("Unable to access '%s'", fn);
 
@@ -1479,7 +1579,7 @@ static void read_testcases(void) {
 
     }
 
-    if (st.st_size > MAX_FILE) 
+    if (st.st_size > MAX_FILE)
       FATAL("Test case '%s' is too big (%s, limit is %s)", fn,
             DMS(st.st_size), DMS(MAX_FILE));
 
@@ -1491,7 +1591,9 @@ static void read_testcases(void) {
     if (!access(dfn, F_OK)) passed_det = 1;
     ck_free(dfn);
 
-    add_to_queue(fn, st.st_size, passed_det);
+    // Provide 0 as the proximity score and update later in calibrate_case(),
+    // and sort later after the dry-run phase.
+    add_to_queue(fn, st.st_size, passed_det, 0);
 
   }
 
@@ -1804,7 +1906,7 @@ static void maybe_add_auto(u8* mem, u32 len) {
 
     i = sizeof(interesting_16) >> 1;
 
-    while (i--) 
+    while (i--)
       if (*((u16*)mem) == interesting_16[i] ||
           *((u16*)mem) == SWAP16(interesting_16[i])) return;
 
@@ -1814,7 +1916,7 @@ static void maybe_add_auto(u8* mem, u32 len) {
 
     i = sizeof(interesting_32) >> 2;
 
-    while (i--) 
+    while (i--)
       if (*((u32*)mem) == interesting_32[i] ||
           *((u32*)mem) == SWAP32(interesting_32[i])) return;
 
@@ -1964,12 +2066,12 @@ static void destroy_extras(void) {
 
   u32 i;
 
-  for (i = 0; i < extras_cnt; i++) 
+  for (i = 0; i < extras_cnt; i++)
     ck_free(extras[i].data);
 
   ck_free(extras);
 
-  for (i = 0; i < a_extras_cnt; i++) 
+  for (i = 0; i < a_extras_cnt; i++)
     ck_free(a_extras[i].data);
 
   ck_free(a_extras);
@@ -2286,11 +2388,12 @@ static u8 run_target(char** argv, u32 timeout) {
      territory. */
 
   memset(trace_bits, 0, MAP_SIZE);
+  memset(dfg_bits, 0, sizeof(u32) * DFG_MAP_SIZE);
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
      logic compiled into the target program, so we will just keep calling
-     execve(). There is a bit of code duplication between here and 
+     execve(). There is a bit of code duplication between here and
      init_forkserver(), but c'est la vie. */
 
   if (dumb_mode == 1 || no_forkserver) {
@@ -2659,11 +2762,18 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
+  q->prox_score  = compute_proximity_score();
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
   total_bitmap_size += q->bitmap_size;
   total_bitmap_entries++;
+
+  /* Update proximity score information */
+  total_prox_score += q->prox_score;
+  avg_prox_score = total_prox_score / queued_paths;
+  if (min_prox_score > q->prox_score) min_prox_score = q->prox_score;
+  if (max_prox_score < q->prox_score) max_prox_score = q->prox_score;
 
   update_bitmap_score(q);
 
@@ -2755,7 +2865,7 @@ static void perform_dry_run(char** argv) {
     if (stop_soon) return;
 
     if (res == crash_mode || res == FAULT_NOBITS)
-      SAYF(cGRA "    len = %u, map size = %u, exec speed = %llu us\n" cRST, 
+      SAYF(cGRA "    len = %u, map size = %u, exec speed = %llu us\n" cRST,
            q->len, q->bitmap_size, q->exec_us);
 
     switch (res) {
@@ -2807,7 +2917,7 @@ static void perform_dry_run(char** argv) {
 
         }
 
-      case FAULT_CRASH:  
+      case FAULT_CRASH:
 
         if (crash_mode) break;
 
@@ -2844,7 +2954,7 @@ static void perform_dry_run(char** argv) {
                "      if you are using ASAN, see %s/notes_for_asan.txt.\n\n"
 
 #ifdef __APPLE__
-  
+
                "    - On MacOS X, the semantics of fork() syscalls are non-standard and may\n"
                "      break afl-fuzz performance optimizations when running platform-specific\n"
                "      binaries. To fix this, set AFL_NO_FORKSRV=1 in the environment.\n\n"
@@ -2866,7 +2976,7 @@ static void perform_dry_run(char** argv) {
                "      inputs - but not ones that cause an outright crash.\n\n"
 
 #ifdef __APPLE__
-  
+
                "    - On MacOS X, the semantics of fork() syscalls are non-standard and may\n"
                "      break afl-fuzz performance optimizations when running platform-specific\n"
                "      binaries. To fix this, set AFL_NO_FORKSRV=1 in the environment.\n\n"
@@ -2888,7 +2998,7 @@ static void perform_dry_run(char** argv) {
 
         FATAL("No instrumentation detected");
 
-      case FAULT_NOBITS: 
+      case FAULT_NOBITS:
 
         useless_at_start++;
 
@@ -2943,7 +3053,7 @@ static void link_or_copy(u8* old_path, u8* new_path) {
 
   tmp = ck_alloc(64 * 1024);
 
-  while ((i = read(sfd, tmp, 64 * 1024)) > 0) 
+  while ((i = read(sfd, tmp, 64 * 1024)) > 0)
     ck_write(dfd, tmp, i, new_path);
 
   if (i < 0) PFATAL("read() failed");
@@ -3075,7 +3185,7 @@ static u8* describe_op(u8 hnb) {
       sprintf(ret + strlen(ret), ",pos:%u", stage_cur_byte);
 
       if (stage_val_type != STAGE_VAL_NONE)
-        sprintf(ret + strlen(ret), ",val:%s%+d", 
+        sprintf(ret + strlen(ret), ",val:%s%+d",
                 (stage_val_type == STAGE_VAL_BE) ? "be:" : "",
                 stage_cur_val);
 
@@ -3149,6 +3259,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  hnb;
   s32 fd;
   u8  keeping = 0, res;
+  u64 prox_score;
 
   if (fault == crash_mode) {
 
@@ -3158,12 +3269,14 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     if (!(hnb = has_new_bits(virgin_bits))) {
       if (crash_mode) total_crashes++;
       return 0;
-    }    
+    }
+
+    prox_score = compute_proximity_score();
 
 #ifndef SIMPLE_FILES
 
-    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
-                      describe_op(hnb));
+    fn = alloc_printf("%s/queue/id:%06u,%llu,%s", out_dir, queued_paths,
+                      prox_score, describe_op(hnb));
 
 #else
 
@@ -3171,19 +3284,19 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
-    add_to_queue(fn, len, 0);
+    add_to_queue(fn, len, 0, prox_score);
 
     if (hnb == 2) {
-      queue_top->has_new_cov = 1;
+      queue_last->has_new_cov = 1;
       queued_with_cov++;
     }
 
-    queue_top->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+    queue_last->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */
 
-    res = calibrate_case(argv, queue_top, mem, queue_cycle - 1, 0);
+    res = calibrate_case(argv, queue_last, mem, queue_cycle - 1, 0);
 
     if (res == FAULT_ERROR)
       FATAL("Unable to execute target application");
@@ -3288,10 +3401,14 @@ keep_as_crash:
 
       if (!unique_crashes) write_crash_readme();
 
+      // Temporary computation for debugging.
+      prox_score = compute_proximity_score();
+
 #ifndef SIMPLE_FILES
 
-      fn = alloc_printf("%s/crashes/id:%06llu,sig:%02u,%s", out_dir,
-                        unique_crashes, kill_signal, describe_op(0));
+      fn = alloc_printf("%s/crashes/id:%06llu,%llu,sig:%02u,%s", out_dir,
+                        unique_crashes, prox_score, kill_signal,
+                        describe_op(0));
 
 #else
 
@@ -3324,40 +3441,6 @@ keep_as_crash:
   ck_free(fn);
 
   return keeping;
-
-}
-
-
-/* When resuming, try to find the queue position to start from. This makes sense
-   only when resuming, and when we can find the original fuzzer_stats. */
-
-static u32 find_start_position(void) {
-
-  static u8 tmp[4096]; /* Ought to be enough for anybody. */
-
-  u8  *fn, *off;
-  s32 fd, i;
-  u32 ret;
-
-  if (!resuming_fuzz) return 0;
-
-  if (in_place_resume) fn = alloc_printf("%s/fuzzer_stats", out_dir);
-  else fn = alloc_printf("%s/../fuzzer_stats", in_dir);
-
-  fd = open(fn, O_RDONLY);
-  ck_free(fn);
-
-  if (fd < 0) return 0;
-
-  i = read(fd, tmp, sizeof(tmp) - 1); (void)i; /* Ignore errors */
-  close(fd);
-
-  off = strstr(tmp, "cur_path          : ");
-  if (!off) return 0;
-
-  ret = atoi(off + 20);
-  if (ret >= queued_paths) ret = 0;
-  return ret;
 
 }
 
@@ -3505,7 +3588,7 @@ static void maybe_update_plot_file(double bitmap_cvg, double eps) {
   static u32 prev_qp, prev_pf, prev_pnf, prev_ce, prev_md;
   static u64 prev_qc, prev_uc, prev_uh;
 
-  if (prev_qp == queued_paths && prev_pf == pending_favored && 
+  if (prev_qp == queued_paths && prev_pf == pending_favored &&
       prev_pnf == pending_not_fuzzed && prev_ce == current_entry &&
       prev_qc == queue_cycle && prev_uc == unique_crashes &&
       prev_uh == unique_hangs && prev_md == max_depth) return;
@@ -3525,7 +3608,7 @@ static void maybe_update_plot_file(double bitmap_cvg, double eps) {
      favored_not_fuzzed, unique_crashes, unique_hangs, max_depth,
      execs_per_sec */
 
-  fprintf(plot_file, 
+  fprintf(plot_file,
           "%llu, %llu, %u, %u, %u, %u, %0.02f%%, %llu, %llu, %u, %0.02f\n",
           get_cur_time() / 1000, queue_cycle - 1, current_entry, queued_paths,
           pending_not_fuzzed, pending_favored, bitmap_cvg, unique_crashes,
@@ -3601,7 +3684,7 @@ static double get_runnable_processes(void) {
         !strncmp(tmp, "procs_blocked ", 14)) val += atoi(tmp + 14);
 
   }
- 
+
   fclose(f);
 
   if (!res) {
@@ -3938,7 +4021,7 @@ static void show_stats(void) {
   /* Calculate smoothed exec speed stats. */
 
   if (!last_execs) {
-  
+
     avg_exec = ((double)total_execs) * 1000 / (cur_ms - start_time);
 
   } else {
@@ -3970,7 +4053,7 @@ static void show_stats(void) {
   t_bytes = count_non_255_bytes(virgin_bits);
   t_byte_ratio = ((double)t_bytes * 100) / MAP_SIZE;
 
-  if (t_bytes) 
+  if (t_bytes)
     stab_ratio = 100 - ((double)var_byte_count) * 100 / t_bytes;
   else
     stab_ratio = 100;
@@ -3992,7 +4075,7 @@ static void show_stats(void) {
 
     last_plot_ms = cur_ms;
     maybe_update_plot_file(t_byte_ratio, avg_exec);
- 
+
   }
 
   /* Honor AFL_EXIT_WHEN_DONE and AFL_BENCH_UNTIL_CRASH. */
@@ -4039,7 +4122,7 @@ static void show_stats(void) {
   memset(tmp, ' ', banner_pad);
 
   sprintf(tmp + banner_pad, "%s " cLCY VERSION cLGN
-          " (%s)",  crash_mode ? cPIN "peruvian were-rabbit" : 
+          " (%s)",  crash_mode ? cPIN "peruvian were-rabbit" :
           cYEL "american fuzzy lop", use_banner);
 
   SAYF("\n%s\n\n", tmp);
@@ -4101,7 +4184,7 @@ static void show_stats(void) {
 
     if (dumb_mode)
 
-      SAYF(bV bSTOP "   last new path : " cPIN "n/a" cRST 
+      SAYF(bV bSTOP "   last new path : " cPIN "n/a" cRST
            " (non-instrumented mode)        ");
 
      else
@@ -4128,7 +4211,7 @@ static void show_stats(void) {
   sprintf(tmp, "%s%s", DI(unique_hangs),
          (unique_hangs >= KEEP_UNIQUE_HANG) ? "+" : "");
 
-  SAYF(bV bSTOP "  last uniq hang : " cRST "%-34s " bSTG bV bSTOP 
+  SAYF(bV bSTOP "  last uniq hang : " cRST "%-34s " bSTG bV bSTOP
        "   uniq hangs : " cRST "%-6s " bSTG bV "\n",
        DTD(cur_ms, last_hang_time), tmp);
 
@@ -4145,10 +4228,10 @@ static void show_stats(void) {
 
   SAYF(bV bSTOP "  now processing : " cRST "%-17s " bSTG bV bSTOP, tmp);
 
-  sprintf(tmp, "%0.02f%% / %0.02f%%", ((double)queue_cur->bitmap_size) * 
+  sprintf(tmp, "%0.02f%% / %0.02f%%", ((double)queue_cur->bitmap_size) *
           100 / MAP_SIZE, t_byte_ratio);
 
-  SAYF("    map density : %s%-21s " bSTG bV "\n", t_byte_ratio > 70 ? cLRD : 
+  SAYF("    map density : %s%-21s " bSTG bV "\n", t_byte_ratio > 70 ? cLRD :
        ((t_bytes < 200 && !dumb_mode) ? cPIN : cRST), tmp);
 
   sprintf(tmp, "%s (%0.02f%%)", DI(cur_skipped_paths),
@@ -4169,7 +4252,7 @@ static void show_stats(void) {
 
   /* Yeah... it's still going on... halp? */
 
-  SAYF(bV bSTOP "  now trying : " cRST "%-21s " bSTG bV bSTOP 
+  SAYF(bV bSTOP "  now trying : " cRST "%-21s " bSTG bV bSTOP
        " favored paths : " cRST "%-22s " bSTG bV "\n", stage_name, tmp);
 
   if (!stage_max) {
@@ -4295,7 +4378,7 @@ static void show_stats(void) {
   if (t_bytes) sprintf(tmp, "%0.02f%%", stab_ratio);
     else strcpy(tmp, "n/a");
 
-  SAYF(" stability : %s%-10s " bSTG bV "\n", (stab_ratio < 85 && var_byte_count > 40) 
+  SAYF(" stability : %s%-10s " bSTG bV "\n", (stab_ratio < 85 && var_byte_count > 40)
        ? cLRD : ((queued_variable && (!persistent_mode || var_byte_count > 20))
        ? cMGN : cRST), tmp);
 
@@ -4355,7 +4438,7 @@ static void show_stats(void) {
 
     if (cpu_aff >= 0) {
 
-      SAYF(SP10 cGRA "[cpu%03u:%s%3u%%" cGRA "]\r" cRST, 
+      SAYF(SP10 cGRA "[cpu%03u:%s%3u%%" cGRA "]\r" cRST,
            MIN(cpu_aff, 999), cpu_color,
            MIN(cur_utilization, 999));
 
@@ -4363,7 +4446,7 @@ static void show_stats(void) {
 
       SAYF(SP10 cGRA "   [cpu:%s%3u%%" cGRA "]\r" cRST,
            cpu_color, MIN(cur_utilization, 999));
- 
+
    }
 
 #else
@@ -4412,7 +4495,7 @@ static void show_init_stats(void) {
 
   SAYF("\n");
 
-  if (avg_us > (qemu_mode ? 50000 : 10000)) 
+  if (avg_us > (qemu_mode ? 50000 : 10000))
     WARNF(cLRD "The target binary is pretty slow! See %s/perf_tips.txt.",
           doc_path);
 
@@ -4446,7 +4529,7 @@ static void show_init_stats(void) {
       cGRA "    Test case count : " cRST "%u favored, %u variable, %u total\n"
       cGRA "       Bitmap range : " cRST "%u to %u bits (average: %0.02f bits)\n"
       cGRA "        Exec timing : " cRST "%s to %s us (average: %s us)\n",
-      queued_favored, queued_variable, queued_paths, min_bits, max_bits, 
+      queued_favored, queued_variable, queued_paths, min_bits, max_bits,
       ((double)total_bitmap_size) / (total_bitmap_entries ? total_bitmap_entries : 1),
       DI(min_us), DI(max_us), DI(avg_us));
 
@@ -4468,7 +4551,7 @@ static void show_init_stats(void) {
 
     if (exec_tmout > EXEC_TIMEOUT) exec_tmout = EXEC_TIMEOUT;
 
-    ACTF("No -t option specified, so I'll use exec timeout of %u ms.", 
+    ACTF("No -t option specified, so I'll use exec timeout of %u ms.",
          exec_tmout);
 
     timeout_given = 1;
@@ -4499,7 +4582,7 @@ static u32 next_p2(u32 val) {
   while (val > ret) ret <<= 1;
   return ret;
 
-} 
+}
 
 
 /* Trim all new test cases to save cycles when doing deterministic checks. The
@@ -4571,7 +4654,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
         q->len -= trim_avail;
         len_p2  = next_p2(q->len);
 
-        memmove(in_buf + remove_pos, in_buf + remove_pos + trim_avail, 
+        memmove(in_buf + remove_pos, in_buf + remove_pos + trim_avail,
                 move_tail);
 
         /* Let's save a clean trace, which will be needed by
@@ -4699,7 +4782,7 @@ static u32 choose_block_len(u32 limit) {
              max_value = HAVOC_BLK_MEDIUM;
              break;
 
-    default: 
+    default:
 
              if (UR(10)) {
 
@@ -4721,6 +4804,31 @@ static u32 choose_block_len(u32 limit) {
 
 }
 
+/* Calculate the factor to multiply to the performance score. This is derived
+ * from the proximity scores of the DFG nodes covered by the test case. */
+static double calculate_factor(u64 prox_score) {
+
+  double factor;
+  double normalized_prox_score, progress_to_tx, T, p;
+  u64 cur_ms, t;
+
+  if (t_x) { // AFLGo's seed scheduling strategy.
+    if (min_prox_score == max_prox_score) normalized_prox_score = 0.5;
+    else normalized_prox_score = (double) (prox_score - min_prox_score) /
+                                 (double) (max_prox_score - min_prox_score);
+    cur_ms = get_cur_time();
+    t = (cur_ms - start_time) / 1000;
+    progress_to_tx = ((double) t) / ((double) t_x * 60.0);
+    T = 1.0 / pow(20.0, progress_to_tx);
+    p = normalized_prox_score * (1.0 - T) + 0.5 * T;
+    factor = pow(2.0, 5.0 * 2.0 * (p - 0.5)); // Note log2(MAX_FACTOR) = 5.0
+  }
+  else if (no_dfg_schedule || !avg_prox_score) factor = 1.0; // No factor.
+  else factor = ((double) prox_score) / ((double) avg_prox_score); // Default.
+
+  return factor;
+
+}
 
 /* Calculate case desirability score to adjust the length of havoc fuzzing.
    A helper function for fuzz_one(). Maybe some of these constants should
@@ -4905,7 +5013,7 @@ static u8 could_be_arith(u32 old_val, u32 new_val, u8 blen) {
 }
 
 
-/* Last but not least, a similar helper to see if insertion of an 
+/* Last but not least, a similar helper to see if insertion of an
    interesting integer is redundant given the insertions done for
    shorter blen. The last param (check_le) is set if the caller
    already executed LE insertion for current blen and wants to see
@@ -4989,6 +5097,8 @@ static u8 fuzz_one(char** argv) {
   u8  *in_buf, *out_buf, *orig_in, *ex_tmp, *eff_map = 0;
   u64 havoc_queued,  orig_hit_cnt, new_hit_cnt;
   u32 splice_cycle = 0, perf_score = 100, orig_perf, prev_cksum, eff_cnt = 1;
+
+ struct queue_entry* target; // Target test case to splice with.
 
   u8  ret_val = 1, doing_det = 0;
 
@@ -5186,7 +5296,7 @@ static u8 fuzz_one(char** argv) {
 
        We do this here, rather than as a separate stage, because it's a nice
        way to keep the operation approximately "free" (i.e., no extra execs).
-       
+
        Empirically, performing the check when flipping the least significant bit
        is advantageous, compared to doing it at the time of more disruptive
        changes, where the program flow may be affected in more violent ways.
@@ -5232,7 +5342,7 @@ static u8 fuzz_one(char** argv) {
 
       if (cksum != queue_cur->exec_cksum) {
 
-        if (a_len < MAX_AUTO_EXTRA) a_collect[a_len] = out_buf[stage_cur >> 3];        
+        if (a_len < MAX_AUTO_EXTRA) a_collect[a_len] = out_buf[stage_cur >> 3];
         a_len++;
 
       }
@@ -5573,11 +5683,11 @@ skip_bitflip:
           r4 = orig ^ SWAP16(SWAP16(orig) - j);
 
       /* Try little endian addition and subtraction first. Do it only
-         if the operation would affect more than one byte (hence the 
+         if the operation would affect more than one byte (hence the
          & 0xff overflow checks) and if it couldn't be a product of
          a bitflip. */
 
-      stage_val_type = STAGE_VAL_LE; 
+      stage_val_type = STAGE_VAL_LE;
 
       if ((orig & 0xff) + j > 0xff && !could_be_bitflip(r1)) {
 
@@ -5586,7 +5696,7 @@ skip_bitflip:
 
         if (common_fuzz_stuff(argv, out_buf, len)) goto abandon_entry;
         stage_cur++;
- 
+
       } else stage_max--;
 
       if ((orig & 0xff) < j && !could_be_bitflip(r2)) {
@@ -6005,7 +6115,7 @@ skip_interest:
     for (j = 0; j < extras_cnt; j++) {
 
       if (len + extras[j].len > MAX_FILE) {
-        stage_max--; 
+        stage_max--;
         continue;
       }
 
@@ -6108,16 +6218,25 @@ havoc_stage:
 
   if (!splice_cycle) {
 
+    /* Adjust perf_score with the factor derived from the proximity score */
+    u64 prox_score = queue_cur->prox_score;
+    perf_score = (u32) (calculate_factor(prox_score) * (double) perf_score);
+
     stage_name  = "havoc";
     stage_short = "havoc";
     stage_max   = (doing_det ? HAVOC_CYCLES_INIT : HAVOC_CYCLES) *
                   perf_score / havoc_div / 100;
 
+
   } else {
 
     static u8 tmp[32];
-
+   
     perf_score = orig_perf;
+
+     /* Adjust perf_score with the factor derived from the proximity score */
+    u64 prox_score = (queue_cur->prox_score + target->prox_score) / 2;
+    perf_score = (u32) (calculate_factor(prox_score) * (double) perf_score);
 
     sprintf(tmp, "splice %u", splice_cycle);
     stage_name  = tmp;
@@ -6142,7 +6261,7 @@ havoc_stage:
     u32 use_stacking = 1 << (1 + UR(HAVOC_STACK_POW2));
 
     stage_cur_val = use_stacking;
- 
+
     for (i = 0; i < use_stacking; i++) {
 
       switch (UR(15 + ((extras_cnt + a_extras_cnt) ? 2 : 0))) {
@@ -6154,7 +6273,7 @@ havoc_stage:
           FLIP_BIT(out_buf, UR(temp_len << 3));
           break;
 
-        case 1: 
+        case 1:
 
           /* Set byte to interesting value. */
 
@@ -6188,7 +6307,7 @@ havoc_stage:
           if (temp_len < 4) break;
 
           if (UR(2)) {
-  
+
             *(u32*)(out_buf + UR(temp_len - 3)) =
               interesting_32[UR(sizeof(interesting_32) >> 2)];
 
@@ -6569,8 +6688,7 @@ retry_splicing:
   if (use_splicing && splice_cycle++ < SPLICE_CYCLES &&
       queued_paths > 1 && queue_cur->len > 1) {
 
-    struct queue_entry* target;
-    u32 tid, split_at;
+    u32 idx, idx_div, split_at;
     u8* new_buf;
     s32 f_diff, l_diff;
 
@@ -6583,24 +6701,30 @@ retry_splicing:
       len = queue_cur->len;
     }
 
-    /* Pick a random queue entry and seek to it. Don't splice with yourself. */
+    /* Pick a random queue entry and find it. */
 
-    do { tid = UR(queued_paths); } while (tid == current_entry);
+    idx = UR(queued_paths);
 
-    splicing_with = tid;
-    target = queue;
+    idx_div = idx / 100;
+    if (idx_div < 1024) {
+      target = shortcut_per_100[idx_div];
+      idx -= idx_div * 100;
+    } else {
+      target = shortcut_per_100[1023];
+      idx -= idx_div * 1024;
+    }
 
-    while (tid >= 100) { target = target->next_100; tid -= 100; }
-    while (tid--) target = target->next;
+    while (idx--) target = target->next;
 
-    /* Make sure that the target has a reasonable length. */
+    /* Make sure that the target has a reasonable length and isn't yourself. */
 
     while (target && (target->len < 2 || target == queue_cur)) {
       target = target->next;
-      splicing_with++;
     }
 
     if (!target) goto retry_splicing;
+
+    splicing_with = target->entry_id;
 
     /* Read the testcase into a new buffer. */
 
@@ -6721,12 +6845,12 @@ static void sync_fuzzers(char** argv) {
 
     if (id_fd < 0) PFATAL("Unable to create '%s'", qd_synced_path);
 
-    if (read(id_fd, &min_accept, sizeof(u32)) > 0) 
+    if (read(id_fd, &min_accept, sizeof(u32)) > 0)
       lseek(id_fd, 0, SEEK_SET);
 
     next_min_accept = min_accept;
 
-    /* Show stats */    
+    /* Show stats */
 
     sprintf(stage_tmp, "sync %u", ++sync_cnt);
     stage_name = stage_tmp;
@@ -6743,7 +6867,7 @@ static void sync_fuzzers(char** argv) {
       struct stat st;
 
       if (qd_ent->d_name[0] == '.' ||
-          sscanf(qd_ent->d_name, CASE_PREFIX "%06u", &syncing_case) != 1 || 
+          sscanf(qd_ent->d_name, CASE_PREFIX "%06u", &syncing_case) != 1 ||
           syncing_case < min_accept) continue;
 
       /* OK, sounds like a new one. Let's give it a try. */
@@ -6803,8 +6927,8 @@ static void sync_fuzzers(char** argv) {
     closedir(qd);
     ck_free(qd_path);
     ck_free(qd_synced_path);
-    
-  }  
+
+  }
 
   closedir(sd);
 
@@ -6815,7 +6939,7 @@ static void sync_fuzzers(char** argv) {
 
 static void handle_stop_sig(int sig) {
 
-  stop_soon = 1; 
+  stop_soon = 1;
 
   if (child_pid > 0) kill(child_pid, SIGKILL);
   if (forksrv_pid > 0) kill(forksrv_pid, SIGKILL);
@@ -6837,12 +6961,12 @@ static void handle_timeout(int sig) {
 
   if (child_pid > 0) {
 
-    child_timed_out = 1; 
+    child_timed_out = 1;
     kill(child_pid, SIGKILL);
 
   } else if (child_pid == -1 && forksrv_pid > 0) {
 
-    child_timed_out = 1; 
+    child_timed_out = 1;
     kill(forksrv_pid, SIGKILL);
 
   }
@@ -6932,8 +7056,8 @@ EXP_ST void check_binary(u8* fname) {
          "    sometimes generate shell stubs for dynamically linked programs; try static\n"
          "    library mode (./configure --disable-shared) if that's the case.\n\n"
 
-         "    Another possible cause is that you are actually trying to use a shell\n" 
-         "    wrapper around the fuzzed component. Invoking shell can slow down the\n" 
+         "    Another possible cause is that you are actually trying to use a shell\n"
+         "    wrapper around the fuzzed component. Invoking shell can slow down the\n"
          "    fuzzing process by a factor of 20x or more; it's best to write the wrapper\n"
          "    in a compiled language instead.\n");
 
@@ -7107,8 +7231,8 @@ static void usage(u8* argv0) {
        "  -f file       - location read by the fuzzed program (stdin)\n"
        "  -t msec       - timeout for each run (auto-scaled, 50-%u ms)\n"
        "  -m megs       - memory limit for child process (%u MB)\n"
-       "  -Q            - use binary-only instrumentation (QEMU mode)\n\n"     
- 
+       "  -Q            - use binary-only instrumentation (QEMU mode)\n\n"
+
        "Fuzzing behavior settings:\n\n"
 
        "  -d            - quick & dirty mode (skips deterministic steps)\n"
@@ -7276,12 +7400,12 @@ static void check_crash_handling(void) {
 
 #ifdef __APPLE__
 
-  /* Yuck! There appears to be no simple C API to query for the state of 
+  /* Yuck! There appears to be no simple C API to query for the state of
      loaded daemons on MacOS X, and I'm a bit hesitant to do something
      more sophisticated, such as disabling crash reporting via Mach ports,
      until I get a box to test the code. So, for now, we check for crash
      reporting the awful way. */
-  
+
   if (system("launchctl list 2>/dev/null | grep -q '\\.ReportCrash$'")) return;
 
   SAYF("\n" cLRD "[-] " cRST
@@ -7289,7 +7413,7 @@ static void check_crash_handling(void) {
        "    external crash reporting utility. This will cause issues due to the\n"
        "    extended delay between the fuzzed binary malfunctioning and this fact\n"
        "    being relayed to the fuzzer via the standard waitpid() API.\n\n"
-       "    To avoid having crashes misinterpreted as timeouts, please run the\n" 
+       "    To avoid having crashes misinterpreted as timeouts, please run the\n"
        "    following commands:\n\n"
 
        "    SL=/System/Library; PL=com.apple.ReportCrash\n"
@@ -7319,7 +7443,7 @@ static void check_crash_handling(void) {
          "    between stumbling upon a crash and having this information relayed to the\n"
          "    fuzzer via the standard waitpid() API.\n\n"
 
-         "    To avoid having crashes misinterpreted as timeouts, please log in as root\n" 
+         "    To avoid having crashes misinterpreted as timeouts, please log in as root\n"
          "    and temporarily modify /proc/sys/kernel/core_pattern, like so:\n\n"
 
          "    echo core >/proc/sys/kernel/core_pattern\n");
@@ -7328,7 +7452,7 @@ static void check_crash_handling(void) {
       FATAL("Pipe at the beginning of 'core_pattern'");
 
   }
- 
+
   close(fd);
 
 #endif /* ^__APPLE__ */
@@ -7464,7 +7588,7 @@ static void get_core_count(void) {
       } else if (cur_runnable + 1 <= cpu_core_count) {
 
         OKF("Try parallel jobs - see %s/parallel_fuzzing.txt.", doc_path);
-  
+
       }
 
     }
@@ -7556,7 +7680,7 @@ static void check_asan_opts(void) {
 
   }
 
-} 
+}
 
 
 /* Detect @@ in args. */
@@ -7733,7 +7857,7 @@ static void save_cmdline(u32 argc, char** argv) {
 
   for (i = 0; i < argc; i++)
     len += strlen(argv[i]) + 1;
-  
+
   buf = orig_cmdline = ck_alloc(len);
 
   for (i = 0; i < argc; i++) {
@@ -7760,7 +7884,7 @@ int main(int argc, char** argv) {
 
   s32 opt;
   u64 prev_queued = 0;
-  u32 sync_interval_cnt = 0, seek_to;
+  u32 sync_interval_cnt = 0;
   u8  *extras_dir = 0;
   u8  mem_limit_given = 0;
   u8  exit_1 = !!getenv("AFL_BENCH_JUST_ONE");
@@ -7776,7 +7900,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:Q")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:")) > 0)
 
     switch (opt) {
 
@@ -7818,7 +7942,7 @@ int main(int argc, char** argv) {
 
         break;
 
-      case 'S': 
+      case 'S':
 
         if (sync_id) FATAL("Multiple -S or -M options not supported");
         sync_id = ck_strdup(optarg);
@@ -7944,6 +8068,28 @@ int main(int argc, char** argv) {
 
         break;
 
+      case 'N': /* Do not perform DFG-based seed scheduling */
+
+        no_dfg_schedule = 1;
+        break;
+
+      case 'c': { /* Parameter to test AFLGo's scheduling strategy */
+
+          u8 suffix = 'm';
+          if (sscanf(optarg, "%u%c", &t_x, &suffix) < 1 ||
+              optarg[0] == '-') FATAL("Bad syntax used for -c");
+
+          switch (suffix) {
+            case 's': t_x /= 60; break;
+            case 'm': break;
+            case 'h': t_x *= 60; break;
+            case 'd': t_x *= 60 * 24; break;
+            default:  FATAL("Unsupported suffix or bad syntax for -c");
+          }
+        }
+
+        break;
+
       default:
 
         usage(argv[0]);
@@ -8035,9 +8181,9 @@ int main(int argc, char** argv) {
 
   cull_queue();
 
-  show_init_stats();
+  sort_queue();
 
-  seek_to = find_start_position();
+  show_init_stats();
 
   write_stats_file(0, 0, 0);
   save_auto();
@@ -8061,15 +8207,11 @@ int main(int argc, char** argv) {
     if (!queue_cur) {
 
       queue_cycle++;
-      current_entry     = 0;
       cur_skipped_paths = 0;
-      queue_cur         = queue;
+      queue_cur = queue;
 
-      while (seek_to) {
-        current_entry++;
-        seek_to--;
-        queue_cur = queue_cur->next;
-      }
+      for (struct queue_entry* q_tmp = queue; q_tmp; q_tmp = q_tmp->next)
+        q_tmp->handled_in_cycle = 0;
 
       show_stats();
 
@@ -8094,10 +8236,14 @@ int main(int argc, char** argv) {
 
     }
 
+    /* Note that even if we skip the current item, it's considered "handled". */
+    queue_cur->handled_in_cycle = 1;
+    current_entry = queue_cur->entry_id;
+
     skipped_fuzz = fuzz_one(use_argv);
 
     if (!stop_soon && sync_id && !skipped_fuzz) {
-      
+
       if (!(sync_interval_cnt++ % SYNC_INTERVAL))
         sync_fuzzers(use_argv);
 
@@ -8107,14 +8253,18 @@ int main(int argc, char** argv) {
 
     if (stop_soon) break;
 
-    queue_cur = queue_cur->next;
-    current_entry++;
-
+    if (first_unhandled) { // This is set only when a new item was added.
+      queue_cur = first_unhandled;
+      first_unhandled = NULL;
+    } else { // Proceed to the next unhandled item in the queue.
+      while (queue_cur && queue_cur->handled_in_cycle)
+        queue_cur = queue_cur->next;
+    }
   }
 
   if (queue_cur) show_stats();
 
-  /* If we stopped programmatically, we kill the forkserver and the current runner. 
+  /* If we stopped programmatically, we kill the forkserver and the current runner.
      If we stopped manually, this is done by the signal handler. */
   if (stop_soon == 2) {
       if (child_pid > 0) kill(child_pid, SIGKILL);

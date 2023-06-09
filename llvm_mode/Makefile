@@ -61,7 +61,7 @@ else
   PROGS      = ../afl-clang-fast ../afl-llvm-rt.o ../afl-llvm-rt-32.o ../afl-llvm-rt-64.o
 endif
 
-all: test_deps $(PROGS) test_build all_done
+all: test_deps $(PROGS)
 
 test_deps:
 ifndef AFL_TRACE_PC

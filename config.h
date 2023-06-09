@@ -101,7 +101,7 @@
 #define HAVOC_MIN           16
 
 /* Maximum stacking for havoc-stage tweaks. The actual value is calculated
-   like this: 
+   like this:
 
    n = random between 1 and HAVOC_STACK_POW2
    stacking = 2^n
@@ -277,6 +277,7 @@
 /* Environment variable used to pass SHM ID to the called program. */
 
 #define SHM_ENV_VAR         "__AFL_SHM_ID"
+#define SHM_ENV_VAR_DFG     "__AFL_SHM_ID_DFG"
 
 /* Other less interesting, internal-only variables. */
 
@@ -327,6 +328,7 @@
 
 #define MAP_SIZE_POW2       16
 #define MAP_SIZE            (1 << MAP_SIZE_POW2)
+#define DFG_MAP_SIZE        32568
 
 /* Maximum allocator request size (keep well under INT_MAX): */
 

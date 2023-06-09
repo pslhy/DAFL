@@ -27,6 +27,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <limits.h>
 
 typedef uint8_t  u8;
 typedef uint16_t u16;
@@ -50,8 +51,10 @@ typedef uint32_t u32;
 
 #ifdef __x86_64__
 typedef unsigned long long u64;
+#define U64_MAX ULLONG_MAX
 #else
 typedef uint64_t u64;
+#define U64_MAX UINT64_MAX
 #endif /* ^__x86_64__ */
 
 typedef int8_t   s8;
