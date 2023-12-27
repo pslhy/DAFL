@@ -36,8 +36,8 @@ export DAFL_SELECTIVE_COV=<path to the list of instrumentation targets>
 
 
 ## How to use
-DAFL is best used with its framework which is the [USENIX Security 2023 artifact](https://github.com/prosyslab/DAFL-artifact).
-This framework provides an environment to run DAFL on a prepared set of target programs.
+DAFL is best used with the [USENIX Security 2023 artifact](https://github.com/prosyslab/DAFL-artifact).
+This artifact provides an environment to run DAFL on a prepared set of target programs.
 One can also find scripts that support preparing the environment, building the target programs, running the target programs, and evaluating the results. Thus, it is easy for users to refer to it and use it to run DAFL on their own target programs.
 
 ## Relevant links
