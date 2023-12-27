@@ -5,6 +5,7 @@
 DAFL is a directed grey-box fuzzer implemented on top of <a href="https://lcamtuf.coredump.cx/afl/" target="_blank">American Fuzzy Lop (AFL)</a>.
 The goal of directed fuzzing is to guide the fuzzing process toward the target location and eventually expose possible bugs in the target location.
 DAFL achieves this goal by leveraging the data dependency information of the target program.
+The details of DAFL can be found in the paper "DAFL: Directed Grey-box Fuzzing guided by Data Dependency" (USENIX Security 2023).
 
 
 ## Two key concepts
@@ -35,9 +36,9 @@ export DAFL_SELECTIVE_COV=<path to the list of instrumentation targets>
 
 
 ## How to use
-DAFL is best used with its [framework](https://github.com/prosyslab/DAFL-artifact).
-The framework provides an environment to run DAFL on a prepared set of target programs.
-The framework also provides scripts that support preparing the environment, building the target programs, running the target programs, and evaluating the results. Thus, it is easy for users to refer to it and use it to run DAFL on their own target programs.
+DAFL is best used with its framework which is the USENIX Security 2023 [artifact](https://github.com/prosyslab/DAFL-artifact).
+This framework provides an environment to run DAFL on a prepared set of target programs.
+One can also find scripts that support preparing the environment, building the target programs, running the target programs, and evaluating the results. Thus, it is easy for users to refer to it and use it to run DAFL on their own target programs.
 
 ## Relevant links
 - [DAFL paper](https://goodtaeeun.github.io/assets/papers/sec23.pdf)
