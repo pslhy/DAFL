@@ -162,12 +162,21 @@ bool AFLCoverage::runOnModule(Module &M) {
   std::string file_name = M.getSourceFileName();
   std::set<std::string> covered_targets;
 
-  std::size_t tokloc = file_name.find_last_of('/');
-  if (tokloc != std::string::npos) {
-    file_name = file_name.substr(tokloc + 1, std::string::npos);
-  }
+  
 
   for (auto &F : M) {
+
+    // Get file name from function in case the module is a combined bc file.
+    if (auto *SP = F.getSubprogram()) {
+        file_name = SP->getFilename().str();
+    }
+
+    // Keep only the file name.
+    std::size_t tokloc = file_name.find_last_of('/');
+    if (tokloc != std::string::npos) {
+      file_name = file_name.substr(tokloc + 1, std::string::npos);
+    }
+
     bool is_inst_targ = false;
     const std::string func_name = F.getName().str();
     std::set<std::string>::iterator it;
