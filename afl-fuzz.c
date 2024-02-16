@@ -149,6 +149,7 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with code coverage bitmap    */
 EXP_ST u32* dfg_bits;                 /* SHM with DFG coverage bitmap     */
+EXP_ST u32 *dfg_count_map;            /* DFG count bitmap                 */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -239,6 +240,11 @@ static s32 cpu_aff = -1;       	      /* Selected CPU core                */
 
 static FILE* plot_file;               /* Gnuplot output file              */
 
+struct proximity_score {
+  u64 original;
+  double adjusted;
+};
+
 struct queue_entry {
 
   u8* fname;                          /* File name for the test case      */
@@ -257,7 +263,7 @@ struct queue_entry {
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       exec_cksum;                     /* Checksum of the execution trace  */
 
-  u64 prox_score;                     /* Proximity score of the test case */
+  struct proximity_score prox_score;  /* Proximity score of the test case */
   u32 entry_id;                       /* The ID assigned to the test case */
 
   u64 exec_us,                        /* Execution time (us)              */
@@ -800,6 +806,11 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 }
 
+static s32 compare_proximity_score(struct proximity_score *a, struct proximity_score *b) {
+  if (a->adjusted < b->adjusted) return -1;
+  if (a->adjusted > b->adjusted) return 1;
+  return 0;
+}
 
 /* Insert a test case to the queue, preserving the sorted order based on the
  * proximity score. Updates global variables 'queue', 'shortcut_per_100', and
@@ -813,7 +824,8 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
     first_unhandled = NULL;
 
     // Special case handling when we have to insert at the front.
-    if (queue->prox_score < q->prox_score) {
+    // queue->prox_score < q->prox_score
+    if (compare_proximity_score(&queue->prox_score, &q->prox_score) < 0) {
       q->next = queue;
       queue = q;
       is_inserted = 1;
@@ -833,7 +845,8 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
       if (!is_inserted) {
         // If reached the end or found the proper position, insert there.
-        if (!q_probe->next || q_probe->next->prox_score < q->prox_score) {
+        // q_probe->next->prox_score < q->prox_score
+        if (!q_probe->next || compare_proximity_score(&q_probe->next->prox_score, &q->prox_score) < 0) {
           q->next = q_probe->next;
           q_probe->next = q;
           is_inserted = 1;
@@ -850,7 +863,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
 /* Append new test case to the queue. */
 
-static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
+static void add_to_queue(u8* fname, u32 len, u8 passed_det, struct proximity_score *prox_score) {
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -858,7 +871,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
   q->len          = len;
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
-  q->prox_score   = prox_score;
+  q->prox_score   = *prox_score;
   q->entry_id     = queued_paths;
 
   if (q->depth > max_depth) max_depth = q->depth;
@@ -1125,17 +1138,37 @@ static u32 count_non_255_bytes(u8* mem) {
 
 }
 
-static u64 compute_proximity_score(void) {
+static void update_dfg_count_map(void) {
+
+  u32 i = DFG_MAP_SIZE;
+
+  while (i--) {
+    if (dfg_bits[i]) {
+      dfg_count_map[i]++;
+    }
+  }
+}
+
+static struct proximity_score compute_proximity_score(void) {
 
   u64 prox_score = 0;
+  double adjusted_score = .0;
   u32 i = DFG_MAP_SIZE;
 
   while (i--) {
     prox_score += dfg_bits[i];
+    // Calculate the reduced score
+    double node_adjusted_score = (double)dfg_bits[i];
+    double reduce_rate = 0.05;
+    u32 c = dfg_count_map[i];
+    while (c--) {
+      node_adjusted_score = (1 - reduce_rate) * node_adjusted_score;
+    }
+    adjusted_score += node_adjusted_score;
   }
 
-  return prox_score;
-
+  struct proximity_score pr = {.original = prox_score, .adjusted = adjusted_score};
+  return pr;
 }
 
 /* Destructively simplify trace by eliminating hit count information
@@ -1593,8 +1626,8 @@ static void read_testcases(void) {
 
     // Provide 0 as the proximity score and update later in calibrate_case(),
     // and sort later after the dry-run phase.
-    add_to_queue(fn, st.st_size, passed_det, 0);
-
+    struct proximity_score temp_prox_score = {.original = 0, .adjusted = .0};
+    add_to_queue(fn, st.st_size, passed_det, &temp_prox_score);
   }
 
   free(nl); /* not tracked */
@@ -2770,10 +2803,11 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   total_bitmap_entries++;
 
   /* Update proximity score information */
-  total_prox_score += q->prox_score;
-  avg_prox_score = total_prox_score / queued_paths;
-  if (min_prox_score > q->prox_score) min_prox_score = q->prox_score;
-  if (max_prox_score < q->prox_score) max_prox_score = q->prox_score;
+  // TODO: this should be updated for all inputs in queue
+  // total_prox_score += q->prox_score.original;
+  // avg_prox_score = total_prox_score / queued_paths;
+  // if (min_prox_score > q->prox_score) min_prox_score = q->prox_score;
+  // if (max_prox_score < q->prox_score) max_prox_score = q->prox_score;
 
   update_bitmap_score(q);
 
@@ -3259,7 +3293,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  hnb;
   s32 fd;
   u8  keeping = 0, res;
-  u64 prox_score;
+  struct proximity_score prox_score;
 
   if (fault == crash_mode) {
 
@@ -3273,13 +3307,12 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     //   if (crash_mode) total_crashes++;
     //   return 0;
     // }
-    
       prox_score = compute_proximity_score();
 
 #ifndef SIMPLE_FILES
 
       fn = alloc_printf("%s/queue/id:%06u,%llu,%s", out_dir, queued_paths,
-                        prox_score, describe_op(hnb));
+                        prox_score.original, describe_op(hnb));
 
 #else
 
@@ -3287,7 +3320,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
-      add_to_queue(fn, len, 0, prox_score);
+      add_to_queue(fn, len, 0, &prox_score);
 
       if (hnb == 2) {
         queue_last->has_new_cov = 1;
@@ -3411,7 +3444,7 @@ keep_as_crash:
 #ifndef SIMPLE_FILES
 
       fn = alloc_printf("%s/crashes/id:%06llu,%llu,sig:%02u,%s", out_dir,
-                        total_crashes, prox_score, kill_signal,
+                        total_crashes, prox_score.original, kill_signal,
                         describe_op(0));
 
 #else
@@ -4812,7 +4845,7 @@ static u32 choose_block_len(u32 limit) {
 
 /* Calculate the factor to multiply to the performance score. This is derived
  * from the proximity scores of the DFG nodes covered by the test case. */
-static double calculate_factor(u64 prox_score) {
+static double calculate_factor(double prox_score) {
 
   double factor;
   double normalized_prox_score, progress_to_tx, T, p;
@@ -4830,7 +4863,7 @@ static double calculate_factor(u64 prox_score) {
     factor = pow(2.0, 5.0 * 2.0 * (p - 0.5)); // Note log2(MAX_FACTOR) = 5.0
   }
   else if (no_dfg_schedule || !avg_prox_score) factor = 1.0; // No factor.
-  else factor = ((double) prox_score) / ((double) avg_prox_score); // Default.
+  else factor = (prox_score) / ((double) avg_prox_score); // Default.
 
   return factor;
 
@@ -6225,7 +6258,7 @@ havoc_stage:
   if (!splice_cycle) {
 
     /* Adjust perf_score with the factor derived from the proximity score */
-    u64 prox_score = queue_cur->prox_score;
+    double prox_score = queue_cur->prox_score.adjusted;
     perf_score = (u32) (calculate_factor(prox_score) * (double) perf_score);
 
     stage_name  = "havoc";
@@ -6241,7 +6274,7 @@ havoc_stage:
     perf_score = orig_perf;
 
      /* Adjust perf_score with the factor derived from the proximity score */
-    u64 prox_score = (queue_cur->prox_score + target->prox_score) / 2;
+    double prox_score = (queue_cur->prox_score.adjusted + target->prox_score.adjusted) / 2;
     perf_score = (u32) (calculate_factor(prox_score) * (double) perf_score);
 
     sprintf(tmp, "splice %u", splice_cycle);
