@@ -240,9 +240,16 @@ static s32 cpu_aff = -1;       	      /* Selected CPU core                */
 
 static FILE* plot_file;               /* Gnuplot output file              */
 
+static double *proximity_score_cache = NULL; /* Cache for proximity scores */
+static double proximity_score_reduction = 0.05 /* Reduction factor for proximity scores */;
+static u32 max_input = 1024;          /* Maximum input in queue            */
+
 struct proximity_score {
   u64 original;
   double adjusted;
+  u32 total;
+  u32 *dfg_count_map; // Sparse map: [count]
+  u32 *dfg_dense_map; // Dense map: [index, count]
 };
 
 struct queue_entry {
@@ -301,10 +308,10 @@ static u32 extras_cnt;                /* Total number of tokens read      */
 static struct extra_data* a_extras;   /* Automatically selected extras    */
 static u32 a_extras_cnt;              /* Total number of tokens available */
 
-static u64 max_prox_score = 0;        /* Maximum score of the seed queue  */
-static u64 min_prox_score = U64_MAX;  /* Minimum score of the seed queue  */
-static u64 total_prox_score = 0;      /* Sum of proximity scores          */
-static u64 avg_prox_score = 0;        /* Average of proximity scores      */
+static struct proximity_score max_prox_score = {.original = 0, .adjusted = 0.0};        /* Maximum score of the seed queue  */
+static struct proximity_score min_prox_score = {.original = U64_MAX, .adjusted = 99999999.9}; /* Minimum score of the seed queue  */
+static struct proximity_score total_prox_score = {.original = 0, .adjusted = 0.0};                                           /* Sum of proximity scores          */
+static struct proximity_score avg_prox_score = {.original = 0, .adjusted = 0.0};                                                                            /* Average of proximity scores      */
 static u32 no_dfg_schedule = 0;      /* No DFG-based seed scheduling     */
 static u32 t_x = 0;                   /* To test AFLGo's scheduling       */
 
@@ -1149,26 +1156,74 @@ static void update_dfg_count_map(void) {
   }
 }
 
-static struct proximity_score compute_proximity_score(void) {
+static u8 save_proximity_map(struct proximity_score *prox_score, u32* dfg_map) {
+  
+  u32 total = prox_score->total;
+  if (total > DFG_MAP_SIZE / 2) {
+    prox_score->dfg_dense_map = NULL;
+    prox_score->dfg_count_map = ck_alloc(DFG_MAP_SIZE * sizeof(u32));
+    memcpy(prox_score->dfg_count_map, dfg_map, DFG_MAP_SIZE * sizeof(u32));
+    return 1;
+  }
+  prox_score->dfg_count_map = NULL;
+  prox_score->dfg_dense_map = ck_alloc(2 * (total + 1) * sizeof(u32));
+  u32 index = 0;
+  for (u32 i = 0; i < DFG_MAP_SIZE; i++) {
+    if (dfg_map[i]) {
+      prox_score->dfg_dense_map[index] = i;
+      prox_score->dfg_dense_map[index + 1] = dfg_map[i];
+      index += 2;
+    }
+  }
+  prox_score->dfg_dense_map[total] = 0;
+  return 0;
 
-  u64 prox_score = 0;
+}
+
+static double compute_reduced_score(u32 score, u32 count) {
+
+  /** Calculate the reduced score: score * (1 - proximity_score_reduction) ^ count
+   *  Use cache to avoid computing the same value multiple times */
+  if (proximity_score_cache == NULL) {
+    proximity_score_cache = ck_alloc(max_input * sizeof(double));
+    double value = 1.0;
+    double factor = 1 - proximity_score_reduction;
+    for (u32 i = 0; i < max_input; i++) {
+      proximity_score_cache[i] = value;
+      value *= factor;
+    }
+  }
+  if (count >= max_input) {
+    return proximity_score_cache[max_input - 1] * score;
+  }
+  return (double)score * proximity_score_cache[count];
+}
+
+static void compute_proximity_score(struct proximity_score *prox_score, u32 *dfg_map, u8 store) {
+
+  u64 orig_score = 0;
   double adjusted_score = .0;
   u32 i = DFG_MAP_SIZE;
+  u32 total = 0;
 
   while (i--) {
-    prox_score += dfg_bits[i];
-    // Calculate the reduced score
-    double node_adjusted_score = (double)dfg_bits[i];
-    double reduce_rate = 0.05;
-    u32 c = dfg_count_map[i];
-    while (c--) {
-      node_adjusted_score = (1 - reduce_rate) * node_adjusted_score;
+    u32 score = dfg_map[i];
+    if (!score) {
+      continue;
     }
-    adjusted_score += node_adjusted_score;
+    total++;
+    orig_score += score;
+    u32 c = dfg_count_map[i];
+    adjusted_score += compute_reduced_score(score, c);
   }
 
-  struct proximity_score pr = {.original = prox_score, .adjusted = adjusted_score};
-  return pr;
+  prox_score->original = orig_score;
+  prox_score->adjusted = adjusted_score;
+  prox_score->total = total;
+
+  if (store) {
+    save_proximity_map(prox_score, dfg_map);
+  }
 }
 
 /* Destructively simplify trace by eliminating hit count information
@@ -2795,7 +2850,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
-  q->prox_score  = compute_proximity_score();
+  compute_proximity_score(&q->prox_score, dfg_bits, 1);
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
@@ -3307,7 +3362,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     //   if (crash_mode) total_crashes++;
     //   return 0;
     // }
-      prox_score = compute_proximity_score();
+      compute_proximity_score(&prox_score, dfg_bits, 0);
 
 #ifndef SIMPLE_FILES
 
@@ -3439,7 +3494,7 @@ keep_as_crash:
       if (!unique_crashes) write_crash_readme();
 
       // Temporary computation for debugging.
-      prox_score = compute_proximity_score();
+      compute_proximity_score(&prox_score, dfg_bits, 0);
 
 #ifndef SIMPLE_FILES
 
@@ -4852,9 +4907,10 @@ static double calculate_factor(double prox_score) {
   u64 cur_ms, t;
 
   if (t_x) { // AFLGo's seed scheduling strategy.
-    if (min_prox_score == max_prox_score) normalized_prox_score = 0.5;
-    else normalized_prox_score = (double) (prox_score - min_prox_score) /
-                                 (double) (max_prox_score - min_prox_score);
+    // min_prox_score == max_prox_score
+    if (compare_proximity_score(&min_prox_score, &max_prox_score) == 0) normalized_prox_score = 0.5;
+    else normalized_prox_score = (double) (prox_score - min_prox_score.adjusted) /
+                                 (double) (max_prox_score.adjusted - min_prox_score.adjusted);
     cur_ms = get_cur_time();
     t = (cur_ms - start_time) / 1000;
     progress_to_tx = ((double) t) / ((double) t_x * 60.0);
@@ -4862,8 +4918,8 @@ static double calculate_factor(double prox_score) {
     p = normalized_prox_score * (1.0 - T) + 0.5 * T;
     factor = pow(2.0, 5.0 * 2.0 * (p - 0.5)); // Note log2(MAX_FACTOR) = 5.0
   }
-  else if (no_dfg_schedule || !avg_prox_score) factor = 1.0; // No factor.
-  else factor = (prox_score) / ((double) avg_prox_score); // Default.
+  else if (no_dfg_schedule || !avg_prox_score.original) factor = 1.0; // No factor.
+  else factor = (prox_score) / ((double) avg_prox_score.adjusted); // Default.
 
   return factor;
 
