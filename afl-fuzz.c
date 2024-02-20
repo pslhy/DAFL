@@ -920,6 +920,14 @@ static void sort_queue(void) {
 
 }
 
+EXP_ST void destroy_queue_entry(struct queue_entry* q) {
+  ck_free(q->fname);
+  ck_free(q->trace_mini);
+  if (q->prox_score.dfg_count_map) ck_free(q->prox_score.dfg_count_map);
+  if (q->prox_score.dfg_dense_map) ck_free(q->prox_score.dfg_dense_map);
+  ck_free(q);
+}
+
 
 /* Destroy the entire queue. */
 
@@ -930,9 +938,7 @@ EXP_ST void destroy_queue(void) {
   while (q) {
 
     n = q->next;
-    ck_free(q->fname);
-    ck_free(q->trace_mini);
-    ck_free(q);
+    destroy_queue_entry(q);
     q = n;
 
   }
@@ -1327,13 +1333,11 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
       if (q_remove != q_preserve) {
         total_prox_score.original -= q_remove->prox_score.original;
         total_prox_score.adjusted -= q_remove->prox_score.adjusted;
-        if (q_remove->prox_score.dfg_count_map)
-          ck_free(q_remove->prox_score.dfg_count_map);
-        if (q_remove->prox_score.dfg_dense_map)
-          ck_free(q_remove->prox_score.dfg_dense_map);
+        destroy_queue_entry(q_remove);
       } else {
         revert_remove = 1;
       }
+      q_remove = q_next;
     }
     queued_paths_cur = max_queue_size + revert_remove;
     if (revert_remove) {
@@ -1348,9 +1352,12 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
   avg_prox_score.adjusted = total_prox_score.adjusted / queued_paths_cur;
   avg_total = avg_total / queued_paths_cur;
   u64 end_time = get_cur_time();
-  // SAYF("Queue size: %u, cur_q: %u, avg total: %u, time elapsed: %llums\n", queued_paths, queued_paths_cur, avg_total, end_time - start_time);
-  // SAYF("Orig score: min: %llu, max: %llu, avg: %llu, total: %llu\n", min_prox_score.original, max_prox_score.original, avg_prox_score.original, total_prox_score.original);
-  // SAYF("Adj score: min: %f, max: %f, avg: %f, total: %f\n", min_prox_score.adjusted, max_prox_score.adjusted, avg_prox_score.adjusted, total_prox_score.adjusted);
+
+  if (not_on_tty) {
+    SAYF("Queue size: %u, cur_q: %u, avg total: %u, time elapsed: %llums\n", queued_paths, queued_paths_cur, avg_total, end_time - start_time);
+    SAYF("Orig score: min: %llu, max: %llu, avg: %llu, total: %llu\n", min_prox_score.original, max_prox_score.original, avg_prox_score.original, total_prox_score.original);
+    SAYF("Adj score: min: %f, max: %f, avg: %f, total: %f\n", min_prox_score.adjusted, max_prox_score.adjusted, avg_prox_score.adjusted, total_prox_score.adjusted);
+  }
 
 }
 
@@ -8525,6 +8532,7 @@ stop_fuzzing:
   destroy_extras();
   ck_free(target_path);
   ck_free(sync_id);
+  ck_free(dfg_count_map);
 
   alloc_report();
 
