@@ -243,7 +243,7 @@ static FILE* plot_file;               /* Gnuplot output file              */
 
 static double *proximity_score_cache = NULL; /* Cache for proximity scores */
 static double proximity_score_reduction = 0.05 /* Reduction factor for proximity scores */;
-static u32 max_queue_size = 4096;          /* Maximum input in queue            */
+static u32 max_queue_size = 64;          /* Maximum input in queue            */
 
 struct proximity_score {
   u64 original;
@@ -266,7 +266,8 @@ struct queue_entry {
       has_new_cov,                    /* Triggers new coverage?           */
       var_behavior,                   /* Variable behavior?               */
       favored,                        /* Currently favored?               */
-      fs_redundant;                   /* Marked as redundant in the fs?   */
+      fs_redundant,                   /* Marked as redundant in the fs?   */
+      removed;                        /* Removed from queue?              */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       exec_cksum;                     /* Checksum of the execution trace  */
@@ -921,13 +922,21 @@ static void sort_queue(void) {
 }
 
 EXP_ST void destroy_queue_entry(struct queue_entry* q, u8 only_prox_score) {
-  
-  if (q->prox_score.dfg_count_map) ck_free(q->prox_score.dfg_count_map);
-  if (q->prox_score.dfg_dense_map) ck_free(q->prox_score.dfg_dense_map);
+
+  ck_free(q->prox_score.dfg_count_map);
+  q->prox_score.dfg_count_map = NULL;
+
+  ck_free(q->prox_score.dfg_dense_map);
+  q->prox_score.dfg_dense_map = NULL;
+
+  ck_free(q->trace_mini);
+  q->trace_mini = NULL;
+
   if (only_prox_score) return;
 
   ck_free(q->fname);
-  ck_free(q->trace_mini);
+  q->fname = NULL;
+
   ck_free(q);
 
 }
@@ -1340,6 +1349,7 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
         total_prox_score.original -= q_remove->prox_score.original;
         total_prox_score.adjusted -= q_remove->prox_score.adjusted;
         destroy_queue_entry(q_remove, 1);
+        q_remove->removed = 1;
         if (not_on_tty) {
           SAYF("Remove entry from queue: %u, orig: %llu, adj: %f, total: %u\n", q_remove->entry_id, q_remove->prox_score.original, q_remove->prox_score.adjusted, q_remove->prox_score.total);
         }
@@ -1585,14 +1595,22 @@ static void update_bitmap_score(struct queue_entry* q) {
 
          /* Faster-executing or smaller test cases are favored. */
 
-         if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
+         if (!top_rated[i]->removed) {
 
-         /* Looks like we're going to win. Decrease ref count for the
-            previous winner, discard its trace_bits[] if necessary. */
+            if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
 
-         if (!--top_rated[i]->tc_ref) {
-           ck_free(top_rated[i]->trace_mini);
-           top_rated[i]->trace_mini = 0;
+            /* Looks like we're going to win. Decrease ref count for the
+                previous winner, discard its trace_bits[] if necessary. */
+
+            if (!--top_rated[i]->tc_ref) {
+              ck_free(top_rated[i]->trace_mini);
+              top_rated[i]->trace_mini = 0;
+            }
+
+         } else {
+
+           top_rated[i] = NULL;
+
          }
 
        }
