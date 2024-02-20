@@ -920,12 +920,16 @@ static void sort_queue(void) {
 
 }
 
-EXP_ST void destroy_queue_entry(struct queue_entry* q) {
-  ck_free(q->fname);
-  ck_free(q->trace_mini);
+EXP_ST void destroy_queue_entry(struct queue_entry* q, u8 only_prox_score) {
+  
   if (q->prox_score.dfg_count_map) ck_free(q->prox_score.dfg_count_map);
   if (q->prox_score.dfg_dense_map) ck_free(q->prox_score.dfg_dense_map);
+  if (only_prox_score) return;
+
+  ck_free(q->fname);
+  ck_free(q->trace_mini);
   ck_free(q);
+
 }
 
 
@@ -938,7 +942,7 @@ EXP_ST void destroy_queue(void) {
   while (q) {
 
     n = q->next;
-    destroy_queue_entry(q);
+    destroy_queue_entry(q, 0);
     q = n;
 
   }
@@ -1331,9 +1335,14 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
     while (q_remove) {
       q_next = q_remove->next;
       if (q_remove != q_preserve) {
+        if (q_remove == first_unhandled)
+          first_unhandled = q_preserve;
         total_prox_score.original -= q_remove->prox_score.original;
         total_prox_score.adjusted -= q_remove->prox_score.adjusted;
-        destroy_queue_entry(q_remove);
+        destroy_queue_entry(q_remove, 1);
+        if (not_on_tty) {
+          SAYF("Remove entry from queue: %u, orig: %llu, adj: %f, total: %u\n", q_remove->entry_id, q_remove->prox_score.original, q_remove->prox_score.adjusted, q_remove->prox_score.total);
+        }
       } else {
         revert_remove = 1;
       }
