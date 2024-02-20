@@ -1232,10 +1232,6 @@ static u8 recompute_proximity_score(struct queue_entry* q) {
   /**
    * Recalculate the proximity score of the input entry
   */
-  if (q->prox_score.dfg_count_map) {
-    compute_proximity_score(&q->prox_score, q->prox_score.dfg_count_map, 0);
-    return 1;
-  }
   if (q->prox_score.dfg_dense_map) {
     double adjusted_score = .0;
     for (u32 i = 0; i < q->prox_score.total; i++) {
@@ -1247,7 +1243,12 @@ static u8 recompute_proximity_score(struct queue_entry* q) {
     q->prox_score.adjusted = adjusted_score;
     return 0;
   }
+  if (q->prox_score.dfg_count_map) {
+    compute_proximity_score(&q->prox_score, q->prox_score.dfg_count_map, 0);
+    return 1;
+  }
   // This should not happen
+  WARNF("Invalid proximity_score for recomputation: testcase %u", q->entry_id);
   return 2;
 }
 
