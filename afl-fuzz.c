@@ -243,7 +243,7 @@ static FILE* plot_file;               /* Gnuplot output file              */
 
 static double *proximity_score_cache = NULL; /* Cache for proximity scores */
 static double proximity_score_reduction = 0.05 /* Reduction factor for proximity scores */;
-static u32 max_queue_size = 1024;          /* Maximum input in queue            */
+static u32 max_queue_size = 4096;          /* Maximum input in queue            */
 
 struct proximity_score {
   u64 original;
@@ -1289,15 +1289,18 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
    * Update [min|max|total|avg]_prox_score
    * Keep the queue size under the limit
   */
+  u64 start_time = get_cur_time();
   init_global_prox_score();
   memset(shortcut_per_100, 0, 1024 * sizeof(struct queue_entry*));
   struct queue_entry *q_cur = queue, *q_next;
   queue = NULL;
+  u32 avg_total = 0;
 
   while (q_cur) {
 
     q_next = q_cur->next;
     q_cur->next = NULL; // To satisfy sorted_insert_to_queue()'s assumption
+    avg_total += q_cur->prox_score.total;
     recompute_proximity_score(q_cur);
     sorted_insert_to_queue(q_cur);
     update_global_prox_score(&q_cur->prox_score);
@@ -1342,6 +1345,11 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
   
   avg_prox_score.original = total_prox_score.original / queued_paths_cur;
   avg_prox_score.adjusted = total_prox_score.adjusted / queued_paths_cur;
+  avg_total = avg_total / queued_paths_cur;
+  u64 end_time = get_cur_time();
+  // SAYF("Queue size: %u, cur_q: %u, avg total: %u, time elapsed: %llums\n", queued_paths, queued_paths_cur, avg_total, end_time - start_time);
+  // SAYF("Orig score: min: %llu, max: %llu, avg: %llu, total: %llu\n", min_prox_score.original, max_prox_score.original, avg_prox_score.original, total_prox_score.original);
+  // SAYF("Adj score: min: %f, max: %f, avg: %f, total: %f\n", min_prox_score.adjusted, max_prox_score.adjusted, avg_prox_score.adjusted, total_prox_score.adjusted);
 
 }
 
