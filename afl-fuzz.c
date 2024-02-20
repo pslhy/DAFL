@@ -243,7 +243,7 @@ static FILE* plot_file;               /* Gnuplot output file              */
 
 static double *proximity_score_cache = NULL; /* Cache for proximity scores */
 static double proximity_score_reduction = 0.05 /* Reduction factor for proximity scores */;
-static u32 max_queue_size = 64;          /* Maximum input in queue            */
+static u32 max_queue_size = 4096;          /* Maximum input in queue            */
 
 struct proximity_score {
   u64 original;
@@ -923,6 +923,8 @@ static void sort_queue(void) {
 
 EXP_ST void destroy_queue_entry(struct queue_entry* q, u8 only_prox_score) {
 
+  q->removed = 1;
+
   ck_free(q->prox_score.dfg_count_map);
   q->prox_score.dfg_count_map = NULL;
 
@@ -1349,7 +1351,7 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
         total_prox_score.original -= q_remove->prox_score.original;
         total_prox_score.adjusted -= q_remove->prox_score.adjusted;
         destroy_queue_entry(q_remove, 1);
-        q_remove->removed = 1;
+        // Should we reduce the count of the dfg_count_map?
         if (not_on_tty) {
           SAYF("Remove entry from queue: %u, orig: %llu, adj: %f, total: %u\n", q_remove->entry_id, q_remove->prox_score.original, q_remove->prox_score.adjusted, q_remove->prox_score.total);
         }
