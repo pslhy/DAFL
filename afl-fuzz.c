@@ -244,6 +244,8 @@ static FILE* plot_file;               /* Gnuplot output file              */
 static double *proximity_score_cache = NULL; /* Cache for proximity scores */
 static double proximity_score_reduction = 0.02; /* Reduction factor for proximity scores */
 static u32 max_queue_size = 4096;          /* Maximum input in queue            */
+static u32 unique_dafl_input = 0;     /* Number of unique input with new coverage on def-use graph */
+static FILE* unique_dafl_log_file = NULL; /* File to record unique input with new coverage on def-use graph */
 
 struct proximity_score {
   u64 original;
@@ -1168,15 +1170,30 @@ static u32 count_non_255_bytes(u8* mem) {
 
 }
 
-static void update_dfg_count_map(void) {
+static void update_dfg_count_map(struct queue_entry *q) {
 
   u32 i = DFG_MAP_SIZE;
+  u8 is_unique = 0;
 
   while (i--) {
+  
     if (dfg_bits[i]) {
-      dfg_count_map[i]++;
+      u32 count = dfg_count_map[i];
+      if (count == 0) is_unique = 1;
+      dfg_count_map[i] = count + 1;
     }
+  
   }
+
+  if (is_unique) {
+    unique_dafl_input++;
+    fprintf(unique_dafl_log_file, "[q] [uniq] [id %u] [orig %llu] [adj %.4f] [tot %u] [cnt %u]\n",
+            q->entry_id, q->prox_score.original, q->prox_score.adjusted, q->prox_score.total, unique_dafl_input);
+  } else {
+    fprintf(unique_dafl_log_file, "[q] [non-uniq] [id %u] [orig %llu] [adj %.4f] [tot %u]\n",
+            q->entry_id, q->prox_score.original, q->prox_score.adjusted, q->prox_score.total);
+  }
+
 }
 
 static u8 save_proximity_map(struct proximity_score *prox_score, u32* dfg_map) {
@@ -1355,6 +1372,8 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
         if (not_on_tty) {
           SAYF("Remove entry from queue: %u, orig: %llu, adj: %f, total: %u\n", q_remove->entry_id, q_remove->prox_score.original, q_remove->prox_score.adjusted, q_remove->prox_score.total);
         }
+        fprintf(unique_dafl_log_file, "[q] [rm] [q %u] [id %u] [orig %llu] [adj %f] [tot %u]\n",
+                queued_paths, q_remove->entry_id, q_remove->prox_score.original, q_remove->prox_score.adjusted, q_remove->prox_score.total);
       } else {
         revert_remove = 1;
       }
@@ -1379,6 +1398,12 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
     SAYF("Orig score: min: %llu, max: %llu, avg: %llu, total: %llu\n", min_prox_score.original, max_prox_score.original, avg_prox_score.original, total_prox_score.original);
     SAYF("Adj score: min: %f, max: %f, avg: %f, total: %f\n", min_prox_score.adjusted, max_prox_score.adjusted, avg_prox_score.adjusted, total_prox_score.adjusted);
   }
+  fprintf(unique_dafl_log_file, "[stat] [queue] [id %u] [cur %u] [avg_tot %u] [time %llu]\n", 
+          queued_paths, queued_paths_cur, avg_total, end_time - start_time);
+  fprintf(unique_dafl_log_file, "[stat] [orig] [id %u] [min %llu] [max %llu] [avg %llu] [total %llu]\n",
+          queued_paths, min_prox_score.original, max_prox_score.original, avg_prox_score.original, total_prox_score.original);
+  fprintf(unique_dafl_log_file, "[stat] [adj] [id %u] [min %f] [max %f] [avg %f] [total %f]\n",
+          queued_paths, min_prox_score.adjusted, max_prox_score.adjusted, avg_prox_score.adjusted, total_prox_score.adjusted);
 
 }
 
@@ -3027,7 +3052,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   // if (min_prox_score > q->prox_score) min_prox_score = q->prox_score;
   // if (max_prox_score < q->prox_score) max_prox_score = q->prox_score;
   update_dfg_score(q);
-  update_dfg_count_map();
+  update_dfg_count_map(q);
 
   update_bitmap_score(q);
 
@@ -7633,6 +7658,13 @@ EXP_ST void setup_dirs_fds(void) {
                      "pending_total, pending_favs, map_size, unique_crashes, "
                      "unique_hangs, max_depth, execs_per_sec\n");
                      /* ignore errors */
+
+  tmp = alloc_printf("%s/unique_dafl.log", out_dir);
+  fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+  unique_dafl_log_file = fdopen(fd, "w");
+  if (!unique_dafl_log_file) PFATAL("fdopen() failed");
 
 }
 
