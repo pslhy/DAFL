@@ -242,7 +242,7 @@ static s32 cpu_aff = -1;       	      /* Selected CPU core                */
 static FILE* plot_file;               /* Gnuplot output file              */
 
 static double *proximity_score_cache = NULL; /* Cache for proximity scores */
-static double proximity_score_reduction = 0.05 /* Reduction factor for proximity scores */;
+static double proximity_score_reduction = 0.02; /* Reduction factor for proximity scores */
 static u32 max_queue_size = 4096;          /* Maximum input in queue            */
 
 struct proximity_score {
@@ -8160,7 +8160,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:r:")) > 0)
 
     switch (opt) {
 
@@ -8348,6 +8348,11 @@ int main(int argc, char** argv) {
           }
         }
 
+        break;
+      
+      case 'r': /* Parameter to test different proximity score reduction ratio */
+        
+        proximity_score_reduction = atof(optarg);
         break;
 
       default:
