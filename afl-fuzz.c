@@ -242,7 +242,7 @@ static s32 cpu_aff = -1;       	      /* Selected CPU core                */
 static FILE* plot_file;               /* Gnuplot output file              */
 
 static double *proximity_score_cache = NULL; /* Cache for proximity scores */
-static double proximity_score_reduction = 0.02; /* Reduction factor for proximity scores */
+static double proximity_score_reduction = 0.1; /* Reduction factor for proximity scores */
 static u32 max_queue_size = 4096;          /* Maximum input in queue            */
 static u32 unique_dafl_input = 0;     /* Number of unique input with new coverage on def-use graph */
 static FILE* unique_dafl_log_file = NULL; /* File to record unique input with new coverage on def-use graph */
@@ -250,7 +250,7 @@ static FILE* unique_dafl_log_file = NULL; /* File to record unique input with ne
 struct proximity_score {
   u64 original;
   double adjusted;
-  u32 total;
+  u32 covered;
   u32 *dfg_count_map; // Sparse map: [count]
   u32 *dfg_dense_map; // Dense map: [index, count]
 };
@@ -1187,26 +1187,26 @@ static void update_dfg_count_map(struct queue_entry *q) {
 
   if (is_unique) {
     unique_dafl_input++;
-    fprintf(unique_dafl_log_file, "[q] [uniq] [id %u] [orig %llu] [adj %.4f] [tot %u] [cnt %u]\n",
-            q->entry_id, q->prox_score.original, q->prox_score.adjusted, q->prox_score.total, unique_dafl_input);
+    fprintf(unique_dafl_log_file, "[q] [uniq] [id %u] [orig %llu] [adj %.4f] [cov %u] [cnt %u]\n",
+            q->entry_id, q->prox_score.original, q->prox_score.adjusted, q->prox_score.covered, unique_dafl_input);
   } else {
-    fprintf(unique_dafl_log_file, "[q] [non-uniq] [id %u] [orig %llu] [adj %.4f] [tot %u]\n",
-            q->entry_id, q->prox_score.original, q->prox_score.adjusted, q->prox_score.total);
+    fprintf(unique_dafl_log_file, "[q] [non-uniq] [id %u] [orig %llu] [adj %.4f] [cov %u]\n",
+            q->entry_id, q->prox_score.original, q->prox_score.adjusted, q->prox_score.covered);
   }
 
 }
 
 static u8 save_proximity_map(struct proximity_score *prox_score, u32* dfg_map) {
   
-  u32 total = prox_score->total;
-  if (total > DFG_MAP_SIZE / 2) {
+  u32 covered = prox_score->covered;
+  if (covered > DFG_MAP_SIZE / 2) {
     prox_score->dfg_dense_map = NULL;
     prox_score->dfg_count_map = ck_alloc(DFG_MAP_SIZE * sizeof(u32));
     memcpy(prox_score->dfg_count_map, dfg_map, DFG_MAP_SIZE * sizeof(u32));
     return 1;
   }
   prox_score->dfg_count_map = NULL;
-  prox_score->dfg_dense_map = ck_alloc(2 * (total + 1) * sizeof(u32));
+  prox_score->dfg_dense_map = ck_alloc(2 * (covered + 1) * sizeof(u32));
   u32 index = 0;
   for (u32 i = 0; i < DFG_MAP_SIZE; i++) {
     if (dfg_map[i]) {
@@ -1215,7 +1215,7 @@ static u8 save_proximity_map(struct proximity_score *prox_score, u32* dfg_map) {
       index += 2;
     }
   }
-  prox_score->dfg_dense_map[total] = 0;
+  prox_score->dfg_dense_map[covered] = 0;
   return 0;
 
 }
@@ -1233,10 +1233,19 @@ static double compute_reduced_score(u32 score, u32 count) {
       value *= factor;
     }
   }
+
+  double reduction = 0.0;
+  double min_reduction = 0.0;
   if (count >= max_queue_size) {
-    return proximity_score_cache[max_queue_size - 1] * score;
+    reduction = proximity_score_cache[max_queue_size - 1];
+  } else {
+    reduction = proximity_score_cache[count];
   }
-  return (double)score * proximity_score_cache[count];
+  if (reduction < min_reduction) {
+    reduction = min_reduction;
+  }
+  return (double)score * reduction;
+
 }
 
 static void compute_proximity_score(struct proximity_score *prox_score, u32 *dfg_map, u8 store) {
@@ -1244,14 +1253,14 @@ static void compute_proximity_score(struct proximity_score *prox_score, u32 *dfg
   u64 orig_score = 0;
   double adjusted_score = .0;
   u32 i = DFG_MAP_SIZE;
-  u32 total = 0;
+  u32 covered = 0;
 
   while (i--) {
     u32 score = dfg_map[i];
     if (!score) {
       continue;
     }
-    total++;
+    covered++;
     orig_score += score;
     u32 c = dfg_count_map[i];
     adjusted_score += compute_reduced_score(score, c);
@@ -1259,7 +1268,7 @@ static void compute_proximity_score(struct proximity_score *prox_score, u32 *dfg
 
   prox_score->original = orig_score;
   prox_score->adjusted = adjusted_score;
-  prox_score->total = total;
+  prox_score->covered = covered;
 
   if (store) {
     save_proximity_map(prox_score, dfg_map);
@@ -1272,7 +1281,7 @@ static u8 recompute_proximity_score(struct queue_entry* q) {
   */
   if (q->prox_score.dfg_dense_map) {
     double adjusted_score = .0;
-    for (u32 i = 0; i < q->prox_score.total; i++) {
+    for (u32 i = 0; i < q->prox_score.covered; i++) {
       u32 index = q->prox_score.dfg_dense_map[i * 2];
       u32 score = q->prox_score.dfg_dense_map[i * 2 + 1];
       u32 count = dfg_count_map[index];
@@ -1333,13 +1342,13 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
   memset(shortcut_per_100, 0, 1024 * sizeof(struct queue_entry*));
   struct queue_entry *q_cur = queue, *q_next;
   queue = NULL;
-  u32 avg_total = 0;
+  u32 avg_covered = 0;
 
   while (q_cur) {
 
     q_next = q_cur->next;
     q_cur->next = NULL; // To satisfy sorted_insert_to_queue()'s assumption
-    avg_total += q_cur->prox_score.total;
+    avg_covered += q_cur->prox_score.covered;
     recompute_proximity_score(q_cur);
     sorted_insert_to_queue(q_cur);
     update_global_prox_score(&q_cur->prox_score);
@@ -1370,10 +1379,10 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
         destroy_queue_entry(q_remove, 1);
         // Should we reduce the count of the dfg_count_map?
         if (not_on_tty) {
-          SAYF("Remove entry from queue: %u, orig: %llu, adj: %f, total: %u\n", q_remove->entry_id, q_remove->prox_score.original, q_remove->prox_score.adjusted, q_remove->prox_score.total);
+          SAYF("Remove entry from queue: %u, orig: %llu, adj: %f, covered: %u\n", q_remove->entry_id, q_remove->prox_score.original, q_remove->prox_score.adjusted, q_remove->prox_score.covered);
         }
-        fprintf(unique_dafl_log_file, "[q] [rm] [q %u] [id %u] [orig %llu] [adj %f] [tot %u]\n",
-                queued_paths, q_remove->entry_id, q_remove->prox_score.original, q_remove->prox_score.adjusted, q_remove->prox_score.total);
+        fprintf(unique_dafl_log_file, "[q] [rm] [q %u] [id %u] [orig %llu] [adj %f] [cov %u]\n",
+                queued_paths, q_remove->entry_id, q_remove->prox_score.original, q_remove->prox_score.adjusted, q_remove->prox_score.covered);
       } else {
         revert_remove = 1;
       }
@@ -1390,16 +1399,16 @@ static void update_dfg_score(struct queue_entry *q_preserve) {
   
   avg_prox_score.original = total_prox_score.original / queued_paths_cur;
   avg_prox_score.adjusted = total_prox_score.adjusted / queued_paths_cur;
-  avg_total = avg_total / queued_paths_cur;
+  avg_covered = avg_covered / queued_paths_cur;
   u64 end_time = get_cur_time();
 
   if (not_on_tty) {
-    SAYF("Queue size: %u, cur_q: %u, avg total: %u, time elapsed: %llums\n", queued_paths, queued_paths_cur, avg_total, end_time - start_time);
+    SAYF("Queue size: %u, cur_q: %u, avg covered: %u, time elapsed: %llums\n", queued_paths, queued_paths_cur, avg_covered, end_time - start_time);
     SAYF("Orig score: min: %llu, max: %llu, avg: %llu, total: %llu\n", min_prox_score.original, max_prox_score.original, avg_prox_score.original, total_prox_score.original);
     SAYF("Adj score: min: %f, max: %f, avg: %f, total: %f\n", min_prox_score.adjusted, max_prox_score.adjusted, avg_prox_score.adjusted, total_prox_score.adjusted);
   }
-  fprintf(unique_dafl_log_file, "[stat] [queue] [id %u] [cur %u] [avg_tot %u] [time %llu]\n", 
-          queued_paths, queued_paths_cur, avg_total, end_time - start_time);
+  fprintf(unique_dafl_log_file, "[stat] [queue] [id %u] [cur %u] [avg_cov %u] [time %llu]\n", 
+          queued_paths, queued_paths_cur, avg_covered, end_time - start_time);
   fprintf(unique_dafl_log_file, "[stat] [orig] [id %u] [min %llu] [max %llu] [avg %llu] [total %llu]\n",
           queued_paths, min_prox_score.original, max_prox_score.original, avg_prox_score.original, total_prox_score.original);
   fprintf(unique_dafl_log_file, "[stat] [adj] [id %u] [min %f] [max %f] [avg %f] [total %f]\n",
@@ -8594,6 +8603,7 @@ stop_fuzzing:
   }
 
   fclose(plot_file);
+  fclose(unique_dafl_log_file);
   destroy_queue();
   destroy_extras();
   ck_free(target_path);
