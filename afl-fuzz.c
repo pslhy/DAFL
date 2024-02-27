@@ -3324,7 +3324,10 @@ static void get_valuation(u8 crashed, char** argv, void* mem, u32 len) {
     cmd = alloc_printf("mv %s/__tmp_file %s/memory/pos/id:%06llu", covdir, out_dir, total_saved_positives);
     total_saved_positives++;
   }
-  system(cmd);
+
+  FILE *fp = popen(cmd, "r");
+  if (fp == NULL) return 1;
+  pclose(fp);
 }
 
 
