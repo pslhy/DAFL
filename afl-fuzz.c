@@ -181,6 +181,9 @@ EXP_ST u32 queued_paths,              /* Total number of queued testcases */
            havoc_div = 1;             /* Cycle count divisor for havoc    */
 
 EXP_ST u64 total_crashes,             /* Total number of crashes          */
+           total_normals,             /* Total number of non-crashes      */
+           total_saved_crashes,       /* Number of crash states saved     */
+           total_saved_positives,     /* Number of positive states saved  */
            unique_crashes,            /* Crashes with unique signatures   */
            total_tmouts,              /* Total number of timeouts         */
            unique_tmouts,             /* Timeouts with unique signatures  */
@@ -3248,6 +3251,83 @@ static void write_crash_readme(void) {
 
 }
 
+static u8 check_coverage(bool crashed, char** argv, void* mem, u32 len) {
+  u8 *covexe = "";
+  u8 *covdir = "";
+  u8 *tmpfile = "";
+  u8 *cmd = "";
+  u8 *covered = "";
+  u32 line = 0;
+  u32 parsed_line = 0;
+
+  if(!getenv("PACFIX_COV_EXE")) return 1;
+  if(!getenv("PACFIX_COV_DIR")) return 1;
+  if(!getenv("PACFIX_TARGET_LINE")) return 1;
+  covexe = getenv("DAFL_COV_EXE");
+  covdir = getenv("DAFL_COV_DIR");
+  valexe = getenv("DAFL_VAL_EXE");
+  line = atoi(getenv("DAFL_TARGET_LINE"));
+
+  tmpfile = alloc_printf("%s/__tmp_file", covdir);
+  // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
+  unlink(tmpfile);
+  write_to_testcase(mem, len);
+  execv(covexe, argv);
+
+  if (crashed) {
+    // Read last line of covdir + "/__tmp_file" with tail -n 1 command
+    cmd = alloc_printf("tail -n 1 %s/__tmp_file", covdir);
+    FILE *fp = popen(cmd, "r");
+    if (fp == NULL) return 1;
+    // __localize: <line_number> if line_number == line then return 1 else return 0
+    u8 *result = fgets(covered, 100, fp);
+    pclose(fp);
+    if (result == NULL) return 1;
+    if(sscanf(covered, "__localize: %d", &parsed_line) != 1) return 1;
+    if(parsed_line == line) return 1;
+    else return 0;
+  } 
+  else {
+    cmd = alloc_printf("grep \"%d\" %s/__tmp_file | wc -l", covdir, line);
+    FILE *fp = popen(cmd, "r");
+    if (fp == NULL) return 1;
+    u8 *result = fgets(covered, 100, fp);
+    pclose(fp);
+    if (result == NULL) return 1;
+    if(sscanf(covered, "%d", &parsed_line) != 1) return 1;
+    if (parsed_line == 0) return 0;
+    else return 1;
+  }
+}
+
+static void get_valuation(bool crashed, char** argv, void* mem, u32 len) {
+  u8 *valexe = "";
+  u8 *covdir = "";
+  u8 *tmpfile = "";
+  u8 *cmd = "";
+
+  if(!getenv("PACFIX_VAL_EXE")) return;
+  if(!getenv("PACFIX_COV_DIR")) return;
+  valexe = getenv("PACFIX_VAL_EXE");
+  covdir = getenv("PACFIX_COV_DIR");
+  tmpfile = alloc_printf("%s/__tmp_file", covdir);
+
+  // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
+  unlink(tmpfile);
+  write_to_testcase(mem, len);
+  execv(valexe, argv);
+
+  if (crashed) {
+     cmd = alloc_printf("mv %s/__tmp_file %s/memory/neg/id:%06llu", covdir, out_dir, total_saved_crashes);
+     total_saved_crashes++;
+  }
+  else {
+    cmd = alloc_printf("mv %s/__tmp_file %s/memory/pos/id:%06llu", covdir, out_dir, total_saved_positives);
+    total_saved_positives++;
+  }
+  system(cmd);
+}
+
 
 /* Check if the result of an execve() during routine fuzzing is interesting,
    save or queue the input test case for further analysis if so. Returns 1 if
@@ -3383,6 +3463,12 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 keep_as_crash:
 
+      u8 covered = check_coverage(true, argv, mem, len);
+
+      if (!covered) return keeping;
+
+      get_valuation(true, argv, mem, len);
+
       /* This is handled in a manner roughly similar to timeouts,
          except for slightly different limits and no need to re-run test
          cases. */
@@ -3428,6 +3514,26 @@ keep_as_crash:
         last_crash_execs = total_execs;
       }
 
+      break;
+    case FAULT_NONE:
+      u8 covered = check_coverage(false, argv, mem, len);
+      if (!covered) return keeping;
+      get_valuation(false, argv, mem, len);
+
+      total_normals++;
+
+#ifndef SIMPLE_FILES
+
+      fn = alloc_printf("%s/normals/id:%06llu,%llu,sig:%02u,%s", out_dir,
+                        total_normals, prox_score, kill_signal,
+                        describe_op(0));
+
+#else
+
+      fn = alloc_printf("%s/normals/id_%06llu_%02u", out_dir, total_normals,
+                        kill_signal);
+
+#endif /* ^!SIMPLE_FILES */
       break;
 
     case FAULT_ERROR: FATAL("Unable to execute target application");
@@ -7348,6 +7454,26 @@ EXP_ST void setup_dirs_fds(void) {
   /* All recorded crashes. */
 
   tmp = alloc_printf("%s/crashes", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  /* All recorded normals. */
+
+  tmp = alloc_printf("%s/normals", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  /* All recorded memory valuations. */
+
+  tmp = alloc_printf("%s/memory", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  tmp = alloc_printf("%s/memory/pos", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  tmp = alloc_printf("%s/memory/neg", out_dir);
   if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
 
