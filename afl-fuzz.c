@@ -3251,7 +3251,7 @@ static void write_crash_readme(void) {
 
 }
 
-static u8 check_coverage(bool crashed, char** argv, void* mem, u32 len) {
+static u8 check_coverage(u8 crashed, char** argv, void* mem, u32 len) {
   u8 *covexe = "";
   u8 *covdir = "";
   u8 *tmpfile = "";
@@ -3265,7 +3265,6 @@ static u8 check_coverage(bool crashed, char** argv, void* mem, u32 len) {
   if(!getenv("PACFIX_TARGET_LINE")) return 1;
   covexe = getenv("DAFL_COV_EXE");
   covdir = getenv("DAFL_COV_DIR");
-  valexe = getenv("DAFL_VAL_EXE");
   line = atoi(getenv("DAFL_TARGET_LINE"));
 
   tmpfile = alloc_printf("%s/__tmp_file", covdir);
@@ -3288,7 +3287,7 @@ static u8 check_coverage(bool crashed, char** argv, void* mem, u32 len) {
     else return 0;
   } 
   else {
-    cmd = alloc_printf("grep \"%d\" %s/__tmp_file | wc -l", covdir, line);
+    cmd = alloc_printf("grep \"%d\" %s/__tmp_file | wc -l", line, covdir);
     FILE *fp = popen(cmd, "r");
     if (fp == NULL) return 1;
     u8 *result = fgets(covered, 100, fp);
@@ -3300,7 +3299,7 @@ static u8 check_coverage(bool crashed, char** argv, void* mem, u32 len) {
   }
 }
 
-static void get_valuation(bool crashed, char** argv, void* mem, u32 len) {
+static void get_valuation(u8 crashed, char** argv, void* mem, u32 len) {
   u8 *valexe = "";
   u8 *covdir = "";
   u8 *tmpfile = "";
@@ -3463,11 +3462,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 keep_as_crash:
 
-      u8 covered = check_coverage(true, argv, mem, len);
-
-      if (!covered) return keeping;
-
-      get_valuation(true, argv, mem, len);
+      if (!check_coverage(1, argv, mem, len)) return keeping;
+      get_valuation(1, argv, mem, len);
 
       /* This is handled in a manner roughly similar to timeouts,
          except for slightly different limits and no need to re-run test
@@ -3516,9 +3512,8 @@ keep_as_crash:
 
       break;
     case FAULT_NONE:
-      u8 covered = check_coverage(false, argv, mem, len);
-      if (!covered) return keeping;
-      get_valuation(false, argv, mem, len);
+      if (!check_coverage(0, argv, mem, len)) return keeping;
+      get_valuation(0, argv, mem, len);
 
       total_normals++;
 
