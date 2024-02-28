@@ -3277,7 +3277,7 @@ static u8 check_coverage(u8 crashed, char** argv, void* mem, u32 len) {
   write_to_testcase(mem, len);
   fault_tmp = run_target(argv, 10000, covexe, tmpfile_env);
 
-  if (access(tmpfile, F_OK) != 0) return 0;
+  if (access(tmpfile, F_OK) != 0) FATAL("Cannot access tmpfile!");
 
   if (crashed) {
     // Read last line of covdir + "/__tmp_file" with tail -n 1 command
@@ -3326,7 +3326,7 @@ static void get_valuation(u8 crashed, char** argv, void* mem, u32 len) {
   write_to_testcase(mem, len);
   fault_tmp = run_target(argv, 10000, valexe, tmpfile_env);
 
-  if (access(tmpfile, F_OK) != 0) return;
+  if (access(tmpfile, F_OK) != 0) FATAL("Cannot access tmpfile!");
 
   if (crashed) {
      cmd = alloc_printf("mv %s %s/memory/neg/id:%06llu", tmpfile, out_dir, total_saved_crashes);
