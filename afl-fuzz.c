@@ -3273,6 +3273,8 @@ static u8 check_coverage(u8 crashed, char** argv, void* mem, u32 len) {
   write_to_testcase(mem, len);
   execv(covexe, argv);
 
+  if (access(tmpfile, F_OK) != 0) return 0;
+
   if (crashed) {
     // Read last line of covdir + "/__tmp_file" with tail -n 1 command
     cmd = alloc_printf("tail -n 1 %s/__tmp_file", covdir);
@@ -3289,11 +3291,11 @@ static u8 check_coverage(u8 crashed, char** argv, void* mem, u32 len) {
   else {
     cmd = alloc_printf("grep \"%d\" %s/__tmp_file | wc -l", line, covdir);
     FILE *fp = popen(cmd, "r");
-    if (fp == NULL) return 1;
+    if (fp == NULL) return 0;
     u8 *result = fgets(covered, 100, fp);
     pclose(fp);
-    if (result == NULL) return 1;
-    if(sscanf(covered, "%d", &parsed_line) != 1) return 1;
+    if (result == NULL) return 0;
+    if(sscanf(covered, "%d", &parsed_line) != 1) return 0;
     if (parsed_line == 0) return 0;
     else return 1;
   }
