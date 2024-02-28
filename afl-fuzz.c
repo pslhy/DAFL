@@ -3263,9 +3263,9 @@ static u8 check_coverage(u8 crashed, char** argv, void* mem, u32 len) {
   if(!getenv("PACFIX_COV_EXE")) return 1;
   if(!getenv("PACFIX_COV_DIR")) return 1;
   if(!getenv("PACFIX_TARGET_LINE")) return 1;
-  covexe = getenv("DAFL_COV_EXE");
-  covdir = getenv("DAFL_COV_DIR");
-  sscanf(getenv("DAFL_TARGET_LINE"), "%d", &line);
+  covexe = getenv("PACFIX_COV_EXE");
+  covdir = getenv("PACFIX_COV_DIR");
+  sscanf(getenv("PACFIX_TARGET_LINE"), "%d", &line);
 
   tmpfile = alloc_printf("%s/__tmp_file", covdir);
   // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
