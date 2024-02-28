@@ -3319,7 +3319,7 @@ static void get_valuation(u8 crashed, char** argv, void* mem, u32 len) {
   // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
   unlink(tmpfile);
   write_to_testcase(mem, len);
-  new_fault = run_target(argv, hang_tmout, valexe);
+  fault_tmp = run_target(argv, hang_tmout, valexe);
 
   if (access(tmpfile, F_OK) != 0) return;
 
