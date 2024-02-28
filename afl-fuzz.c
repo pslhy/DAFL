@@ -243,6 +243,7 @@ static FILE* plot_file;               /* Gnuplot output file              */
 
 static double *proximity_score_cache = NULL; /* Cache for proximity scores */
 static double proximity_score_reduction = 0.1; /* Reduction factor for proximity scores */
+static s32 proximity_score_allowance = -1;  /* Node will be treated as new coverage up to this count */
 static u32 max_queue_size = 4096;          /* Maximum input in queue            */
 static u32 unique_dafl_input = 0;     /* Number of unique input with new coverage on def-use graph */
 static FILE* unique_dafl_log_file = NULL; /* File to record unique input with new coverage on def-use graph */
@@ -1230,7 +1231,19 @@ static double compute_reduced_score(u32 score, u32 count) {
     double factor = 1 - proximity_score_reduction;
     for (u32 i = 0; i < max_queue_size; i++) {
       proximity_score_cache[i] = value;
-      value *= factor;
+      // score * (1 - proximity_score_reduction) ^ count
+      if (proximity_score_allowance < 0) {
+        value *= factor;
+      } else {
+        // If count is less than or equal to proximity_score_allowance,
+        // it will be treated as new node: value = 1.0
+        // Otherwise, the value = (1 - proximity_score_reduction)
+        if (i <= proximity_score_allowance) {
+          value = 1.0;
+        } else {
+          value = factor;
+        }
+      }
     }
   }
 
@@ -8205,7 +8218,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:r:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:r:k:")) > 0)
 
     switch (opt) {
 
@@ -8398,6 +8411,11 @@ int main(int argc, char** argv) {
       case 'r': /* Parameter to test different proximity score reduction ratio */
         
         proximity_score_reduction = atof(optarg);
+        break;
+      
+      case 'k': /* Parameter to test different proximity score allowance threshold for new node */
+        
+        proximity_score_allowance = atoi(optarg);
         break;
 
       default:
