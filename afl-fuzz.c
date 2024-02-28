@@ -3318,6 +3318,8 @@ static void get_valuation(u8 crashed, char** argv, void* mem, u32 len) {
   write_to_testcase(mem, len);
   execv(valexe, argv);
 
+  if (access(tmpfile, F_OK) != 0) return;
+
   if (crashed) {
      cmd = alloc_printf("mv %s/__tmp_file %s/memory/neg/id:%06llu", covdir, out_dir, total_saved_crashes);
      total_saved_crashes++;
@@ -3328,7 +3330,7 @@ static void get_valuation(u8 crashed, char** argv, void* mem, u32 len) {
   }
 
   FILE *fp = popen(cmd, "r");
-  if (fp == NULL) return 1;
+  if (fp == NULL) return;
   pclose(fp);
 }
 
