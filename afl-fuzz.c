@@ -3275,7 +3275,7 @@ static u8 check_coverage(u8 crashed, char** argv, void* mem, u32 len) {
   // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
   unlink(tmpfile);
   write_to_testcase(mem, len);
-  fault_tmp = run_target(argv, hang_tmout, covexe, tmpfile_env);
+  fault_tmp = run_target(argv, 10000, covexe, tmpfile_env);
 
   if (access(tmpfile, F_OK) != 0) return 0;
 
@@ -3324,7 +3324,7 @@ static void get_valuation(u8 crashed, char** argv, void* mem, u32 len) {
   // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
   unlink(tmpfile);
   write_to_testcase(mem, len);
-  fault_tmp = run_target(argv, hang_tmout, valexe, tmpfile_env);
+  fault_tmp = run_target(argv, 10000, valexe, tmpfile_env);
 
   if (access(tmpfile, F_OK) != 0) return;
 
