@@ -2375,7 +2375,7 @@ EXP_ST void init_forkserver(char** argv) {
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update trace_bits[]. */
 
-static u8 run_target(char** argv, u32 timeout) {
+static u8 run_target(char** argv, u32 timeout, char* target_path_p) {
 
   static struct itimerval it;
   static u32 prev_timed_out = 0;
@@ -2466,7 +2466,7 @@ static u8 run_target(char** argv, u32 timeout) {
                              "symbolize=0:"
                              "msan_track_origins=0", 0);
 
-      execv(target_path, argv);
+      execv(target_path_p, argv);
 
       /* Use a distinctive bitmap value to tell the parent about execv()
          falling through. */
@@ -2708,7 +2708,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     write_to_testcase(use_mem, q->len);
 
-    fault = run_target(argv, use_tmout);
+    fault = run_target(argv, use_tmout, target_path);
 
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
@@ -3257,6 +3257,8 @@ static u8 check_coverage(u8 crashed, char** argv, void* mem, u32 len) {
   u8 *tmpfile = "";
   u8 *cmd = "";
   u8 *covered = "";
+
+  u8 fault_tmp;
   u32 line = 0;
   u32 parsed_line = 0;
 
@@ -3271,7 +3273,7 @@ static u8 check_coverage(u8 crashed, char** argv, void* mem, u32 len) {
   // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
   unlink(tmpfile);
   write_to_testcase(mem, len);
-  execv(covexe, argv);
+  fault_tmp = run_target(argv, hang_tmout, covexe);
 
   if (access(tmpfile, F_OK) != 0) return 0;
 
@@ -3306,6 +3308,7 @@ static void get_valuation(u8 crashed, char** argv, void* mem, u32 len) {
   u8 *covdir = "";
   u8 *tmpfile = "";
   u8 *cmd = "";
+  u8 fault_tmp;
 
   if(!getenv("PACFIX_VAL_EXE")) return;
   if(!getenv("PACFIX_COV_DIR")) return;
@@ -3316,7 +3319,7 @@ static void get_valuation(u8 crashed, char** argv, void* mem, u32 len) {
   // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
   unlink(tmpfile);
   write_to_testcase(mem, len);
-  execv(valexe, argv);
+  new_fault = run_target(argv, hang_tmout, valexe);
 
   if (access(tmpfile, F_OK) != 0) return;
 
@@ -3435,7 +3438,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
         u8 new_fault;
         write_to_testcase(mem, len);
-        new_fault = run_target(argv, hang_tmout);
+        new_fault = run_target(argv, hang_tmout, target_path);
 
         /* A corner case that one user reported bumping into: increasing the
            timeout actually uncovers a crash. Make sure we don't discard it if
@@ -4747,7 +4750,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
       write_with_gap(in_buf, q->len, remove_pos, trim_avail);
 
-      fault = run_target(argv, exec_tmout);
+      fault = run_target(argv, exec_tmout, target_path);
       trim_execs++;
 
       if (stop_soon || fault == FAULT_ERROR) goto abort_trimming;
@@ -4840,7 +4843,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   write_to_testcase(out_buf, len);
 
-  fault = run_target(argv, exec_tmout);
+  fault = run_target(argv, exec_tmout, target_path);
 
   if (stop_soon) return 1;
 
@@ -7016,7 +7019,7 @@ static void sync_fuzzers(char** argv) {
 
         write_to_testcase(mem, st.st_size);
 
-        fault = run_target(argv, exec_tmout);
+        fault = run_target(argv, exec_tmout, target_path);
 
         if (stop_soon) return;
 
