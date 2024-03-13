@@ -149,6 +149,7 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with code coverage bitmap    */
 EXP_ST u32* dfg_bits;                 /* SHM with DFG coverage bitmap     */
+EXP_ST u32 *dfg_count_map;            /* DFG count bitmap                 */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -164,6 +165,7 @@ static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    child_timed_out;   /* Traced process timed out?        */
 
 EXP_ST u32 queued_paths,              /* Total number of queued testcases */
+           queued_paths_cur,          /* Total number of queued tests (max 1024) */
            queued_variable,           /* Testcases with variable behavior */
            queued_at_start,           /* Total number of initial inputs   */
            queued_discovered,         /* Items discovered during this run */
@@ -242,6 +244,21 @@ static s32 cpu_aff = -1;       	      /* Selected CPU core                */
 
 static FILE* plot_file;               /* Gnuplot output file              */
 
+static double *proximity_score_cache = NULL; /* Cache for proximity scores */
+static double proximity_score_reduction = 0.1; /* Reduction factor for proximity scores */
+static s32 proximity_score_allowance = -1;  /* Node will be treated as new coverage up to this count */
+static u32 max_queue_size = 4096;          /* Maximum input in queue            */
+static u32 unique_dafl_input = 0;     /* Number of unique input with new coverage on def-use graph */
+static FILE* unique_dafl_log_file = NULL; /* File to record unique input with new coverage on def-use graph */
+
+struct proximity_score {
+  u64 original;
+  double adjusted;
+  u32 covered;
+  u32 *dfg_count_map; // Sparse map: [count]
+  u32 *dfg_dense_map; // Dense map: [index, count]
+};
+
 struct queue_entry {
 
   u8* fname;                          /* File name for the test case      */
@@ -255,12 +272,13 @@ struct queue_entry {
       has_new_cov,                    /* Triggers new coverage?           */
       var_behavior,                   /* Variable behavior?               */
       favored,                        /* Currently favored?               */
-      fs_redundant;                   /* Marked as redundant in the fs?   */
+      fs_redundant,                   /* Marked as redundant in the fs?   */
+      removed;                        /* Removed from queue?              */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       exec_cksum;                     /* Checksum of the execution trace  */
 
-  u64 prox_score;                     /* Proximity score of the test case */
+  struct proximity_score prox_score;  /* Proximity score of the test case */
   u32 entry_id;                       /* The ID assigned to the test case */
 
   u64 exec_us,                        /* Execution time (us)              */
@@ -298,10 +316,10 @@ static u32 extras_cnt;                /* Total number of tokens read      */
 static struct extra_data* a_extras;   /* Automatically selected extras    */
 static u32 a_extras_cnt;              /* Total number of tokens available */
 
-static u64 max_prox_score = 0;        /* Maximum score of the seed queue  */
-static u64 min_prox_score = U64_MAX;  /* Minimum score of the seed queue  */
-static u64 total_prox_score = 0;      /* Sum of proximity scores          */
-static u64 avg_prox_score = 0;        /* Average of proximity scores      */
+static struct proximity_score max_prox_score;        /* Maximum score of the seed queue  */
+static struct proximity_score min_prox_score; /* Minimum score of the seed queue  */
+static struct proximity_score total_prox_score; /* Sum of proximity scores          */
+static struct proximity_score avg_prox_score;                                                                            /* Average of proximity scores      */
 static u32 no_dfg_schedule = 0;      /* No DFG-based seed scheduling     */
 static u32 t_x = 0;                   /* To test AFLGo's scheduling       */
 
@@ -803,6 +821,11 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 }
 
+static s32 compare_proximity_score(struct proximity_score *a, struct proximity_score *b) {
+  if (a->adjusted < b->adjusted) return -1;
+  if (a->adjusted > b->adjusted) return 1;
+  return 0;
+}
 
 /* Insert a test case to the queue, preserving the sorted order based on the
  * proximity score. Updates global variables 'queue', 'shortcut_per_100', and
@@ -816,7 +839,8 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
     first_unhandled = NULL;
 
     // Special case handling when we have to insert at the front.
-    if (queue->prox_score < q->prox_score) {
+    // queue->prox_score < q->prox_score
+    if (compare_proximity_score(&queue->prox_score, &q->prox_score) < 0) {
       q->next = queue;
       queue = q;
       is_inserted = 1;
@@ -836,7 +860,8 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
       if (!is_inserted) {
         // If reached the end or found the proper position, insert there.
-        if (!q_probe->next || q_probe->next->prox_score < q->prox_score) {
+        // q_probe->next->prox_score < q->prox_score
+        if (!q_probe->next || compare_proximity_score(&q_probe->next->prox_score, &q->prox_score) < 0) {
           q->next = q_probe->next;
           q_probe->next = q;
           is_inserted = 1;
@@ -853,7 +878,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
 /* Append new test case to the queue. */
 
-static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
+static void add_to_queue(u8* fname, u32 len, u8 passed_det, struct proximity_score *prox_score) {
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -861,7 +886,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
   q->len          = len;
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
-  q->prox_score   = prox_score;
+  q->prox_score   = *prox_score;
   q->entry_id     = queued_paths;
 
   if (q->depth > max_depth) max_depth = q->depth;
@@ -870,6 +895,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
 
   queue_last = q;
   queued_paths++;
+  queued_paths_cur++;
   pending_not_fuzzed++;
 
   cycles_wo_finds = 0;
@@ -901,6 +927,28 @@ static void sort_queue(void) {
 
 }
 
+EXP_ST void destroy_queue_entry(struct queue_entry* q, u8 only_prox_score) {
+
+  q->removed = 1;
+
+  ck_free(q->prox_score.dfg_count_map);
+  q->prox_score.dfg_count_map = NULL;
+
+  ck_free(q->prox_score.dfg_dense_map);
+  q->prox_score.dfg_dense_map = NULL;
+
+  ck_free(q->trace_mini);
+  q->trace_mini = NULL;
+
+  if (only_prox_score) return;
+
+  ck_free(q->fname);
+  q->fname = NULL;
+
+  ck_free(q);
+
+}
+
 
 /* Destroy the entire queue. */
 
@@ -911,9 +959,7 @@ EXP_ST void destroy_queue(void) {
   while (q) {
 
     n = q->next;
-    ck_free(q->fname);
-    ck_free(q->trace_mini);
-    ck_free(q);
+    destroy_queue_entry(q, 0);
     q = n;
 
   }
@@ -1128,16 +1174,261 @@ static u32 count_non_255_bytes(u8* mem) {
 
 }
 
-static u64 compute_proximity_score(void) {
+static void update_dfg_count_map(struct queue_entry *q) {
 
-  u64 prox_score = 0;
   u32 i = DFG_MAP_SIZE;
+  u8 is_unique = 0;
 
   while (i--) {
-    prox_score += dfg_bits[i];
+  
+    if (dfg_bits[i]) {
+      u32 count = dfg_count_map[i];
+      if (count == 0) is_unique = 1;
+      dfg_count_map[i] = count + 1;
+    }
+  
   }
 
-  return prox_score;
+  if (is_unique) {
+    unique_dafl_input++;
+    fprintf(unique_dafl_log_file, "[q] [uniq] [id %u] [orig %llu] [adj %.4f] [cov %u] [cnt %u]\n",
+            q->entry_id, q->prox_score.original, q->prox_score.adjusted, q->prox_score.covered, unique_dafl_input);
+  } else {
+    fprintf(unique_dafl_log_file, "[q] [non-uniq] [id %u] [orig %llu] [adj %.4f] [cov %u]\n",
+            q->entry_id, q->prox_score.original, q->prox_score.adjusted, q->prox_score.covered);
+  }
+
+}
+
+static u8 save_proximity_map(struct proximity_score *prox_score, u32* dfg_map) {
+  
+  u32 covered = prox_score->covered;
+  if (covered > DFG_MAP_SIZE / 2) {
+    prox_score->dfg_dense_map = NULL;
+    prox_score->dfg_count_map = ck_alloc(DFG_MAP_SIZE * sizeof(u32));
+    memcpy(prox_score->dfg_count_map, dfg_map, DFG_MAP_SIZE * sizeof(u32));
+    return 1;
+  }
+  prox_score->dfg_count_map = NULL;
+  prox_score->dfg_dense_map = ck_alloc(2 * (covered + 1) * sizeof(u32));
+  u32 index = 0;
+  for (u32 i = 0; i < DFG_MAP_SIZE; i++) {
+    if (dfg_map[i]) {
+      prox_score->dfg_dense_map[index] = i;
+      prox_score->dfg_dense_map[index + 1] = dfg_map[i];
+      index += 2;
+    }
+  }
+  prox_score->dfg_dense_map[covered] = 0;
+  return 0;
+
+}
+
+static double compute_reduced_score(u32 score, u32 count) {
+
+  /** Calculate the reduced score: score * (1 - proximity_score_reduction) ^ count
+   *  Use cache to avoid computing the same value multiple times */
+  if (proximity_score_cache == NULL) {
+    proximity_score_cache = ck_alloc(max_queue_size * sizeof(double));
+    double value = 1.0;
+    double factor = 1 - proximity_score_reduction;
+    for (u32 i = 0; i < max_queue_size; i++) {
+      proximity_score_cache[i] = value;
+      // score * (1 - proximity_score_reduction) ^ count
+      if (proximity_score_allowance < 0) {
+        value *= factor;
+      } else {
+        // If count is less than or equal to proximity_score_allowance,
+        // it will be treated as new node: value = 1.0
+        // Otherwise, the value = (1 - proximity_score_reduction)
+        if (i <= proximity_score_allowance) {
+          value = 1.0;
+        } else {
+          value = factor;
+        }
+      }
+    }
+  }
+
+  double reduction = 0.0;
+  double min_reduction = 0.0;
+  if (count >= max_queue_size) {
+    reduction = proximity_score_cache[max_queue_size - 1];
+  } else {
+    reduction = proximity_score_cache[count];
+  }
+  if (reduction < min_reduction) {
+    reduction = min_reduction;
+  }
+  return (double)score * reduction;
+
+}
+
+static void compute_proximity_score(struct proximity_score *prox_score, u32 *dfg_map, u8 store) {
+
+  u64 orig_score = 0;
+  double adjusted_score = .0;
+  u32 i = DFG_MAP_SIZE;
+  u32 covered = 0;
+
+  while (i--) {
+    u32 score = dfg_map[i];
+    if (!score) {
+      continue;
+    }
+    covered++;
+    orig_score += score;
+    u32 c = dfg_count_map[i];
+    adjusted_score += compute_reduced_score(score, c);
+  }
+
+  prox_score->original = orig_score;
+  prox_score->adjusted = adjusted_score;
+  prox_score->covered = covered;
+
+  if (store) {
+    save_proximity_map(prox_score, dfg_map);
+  }
+}
+
+static u8 recompute_proximity_score(struct queue_entry* q) {
+  /**
+   * Recalculate the proximity score of the input entry
+  */
+  if (q->prox_score.dfg_dense_map) {
+    double adjusted_score = .0;
+    for (u32 i = 0; i < q->prox_score.covered; i++) {
+      u32 index = q->prox_score.dfg_dense_map[i * 2];
+      u32 score = q->prox_score.dfg_dense_map[i * 2 + 1];
+      u32 count = dfg_count_map[index];
+      adjusted_score += compute_reduced_score(score, count);
+    }
+    q->prox_score.adjusted = adjusted_score;
+    return 0;
+  }
+  if (q->prox_score.dfg_count_map) {
+    compute_proximity_score(&q->prox_score, q->prox_score.dfg_count_map, 0);
+    return 1;
+  }
+  // This should not happen
+  WARNF("Invalid proximity_score for recomputation: testcase %u", q->entry_id);
+  return 2;
+}
+
+static void init_global_prox_score() {
+  max_prox_score.original = 0;
+  max_prox_score.adjusted = .0;
+  min_prox_score.original = 99999999;
+  min_prox_score.adjusted = 99999999.9;
+  total_prox_score.original = .0;
+  total_prox_score.adjusted = .0;
+  avg_prox_score.original = .0;
+  avg_prox_score.adjusted = .0;
+}
+
+static void update_global_prox_score(struct proximity_score *prox_score) {
+
+  if (prox_score->original > max_prox_score.original) {
+    max_prox_score.original = prox_score->original;
+  }
+  if (prox_score->adjusted > max_prox_score.adjusted) {
+    max_prox_score.adjusted = prox_score->adjusted;
+  }
+  if (prox_score->original < min_prox_score.original) {
+    min_prox_score.original = prox_score->original;
+  }
+  if (prox_score->adjusted < min_prox_score.adjusted) {
+    min_prox_score.adjusted = prox_score->adjusted;
+  }
+  total_prox_score.original += prox_score->original;
+  total_prox_score.adjusted += prox_score->adjusted;
+
+}
+
+static void update_dfg_score(struct queue_entry *q_preserve) {
+  /**
+   * Recalculate score of input entries based on dfg_count_map
+   * Sort the queue based on the new score
+   * TODO: use better sorting algorithm
+   * Update [min|max|total|avg]_prox_score
+   * Keep the queue size under the limit
+  */
+  u64 start_time = get_cur_time();
+  init_global_prox_score();
+  memset(shortcut_per_100, 0, 1024 * sizeof(struct queue_entry*));
+  struct queue_entry *q_cur = queue, *q_next;
+  queue = NULL;
+  u32 avg_covered = 0;
+
+  while (q_cur) {
+
+    q_next = q_cur->next;
+    q_cur->next = NULL; // To satisfy sorted_insert_to_queue()'s assumption
+    avg_covered += q_cur->prox_score.covered;
+    recompute_proximity_score(q_cur);
+    sorted_insert_to_queue(q_cur);
+    update_global_prox_score(&q_cur->prox_score);
+    q_cur = q_next;
+
+  }
+
+  // Remove the last entry if the queue size exceeds the limit
+  if (queued_paths_cur > max_queue_size) {
+    u32 idx = max_queue_size;
+    u32 idx_div = idx / 100;
+    idx -= idx_div * 100;
+    struct queue_entry *q = shortcut_per_100[idx_div];
+    while (idx--) {
+      q = q->next;
+    }
+    struct queue_entry *q_last = q;
+    struct queue_entry *q_remove = q_last->next, *q_next;
+    q_last->next = NULL;
+    u32 revert_remove = 0;
+    while (q_remove) {
+      q_next = q_remove->next;
+      if (q_remove != q_preserve) {
+        if (q_remove == first_unhandled)
+          first_unhandled = NULL;
+        total_prox_score.original -= q_remove->prox_score.original;
+        total_prox_score.adjusted -= q_remove->prox_score.adjusted;
+        destroy_queue_entry(q_remove, 1);
+        // Should we reduce the count of the dfg_count_map?
+        if (not_on_tty) {
+          SAYF("Remove entry from queue: %u, orig: %llu, adj: %f, covered: %u\n", q_remove->entry_id, q_remove->prox_score.original, q_remove->prox_score.adjusted, q_remove->prox_score.covered);
+        }
+        fprintf(unique_dafl_log_file, "[q] [rm] [q %u] [id %u] [orig %llu] [adj %f] [cov %u]\n",
+                queued_paths, q_remove->entry_id, q_remove->prox_score.original, q_remove->prox_score.adjusted, q_remove->prox_score.covered);
+      } else {
+        revert_remove = 1;
+      }
+      q_remove = q_next;
+    }
+    queued_paths_cur = max_queue_size + revert_remove;
+    if (revert_remove) {
+      q_last->next = q_preserve;
+      q_preserve->next = NULL;
+    }
+    min_prox_score.original = q->prox_score.original;
+    min_prox_score.adjusted = q->prox_score.adjusted;
+  }
+  
+  avg_prox_score.original = total_prox_score.original / queued_paths_cur;
+  avg_prox_score.adjusted = total_prox_score.adjusted / queued_paths_cur;
+  avg_covered = avg_covered / queued_paths_cur;
+  u64 end_time = get_cur_time();
+
+  if (not_on_tty) {
+    SAYF("Queue size: %u, cur_q: %u, avg covered: %u, time elapsed: %llums\n", queued_paths, queued_paths_cur, avg_covered, end_time - start_time);
+    SAYF("Orig score: min: %llu, max: %llu, avg: %llu, total: %llu\n", min_prox_score.original, max_prox_score.original, avg_prox_score.original, total_prox_score.original);
+    SAYF("Adj score: min: %f, max: %f, avg: %f, total: %f\n", min_prox_score.adjusted, max_prox_score.adjusted, avg_prox_score.adjusted, total_prox_score.adjusted);
+  }
+  fprintf(unique_dafl_log_file, "[stat] [queue] [id %u] [cur %u] [avg_cov %u] [time %llu]\n", 
+          queued_paths, queued_paths_cur, avg_covered, end_time - start_time);
+  fprintf(unique_dafl_log_file, "[stat] [orig] [id %u] [min %llu] [max %llu] [avg %llu] [total %llu]\n",
+          queued_paths, min_prox_score.original, max_prox_score.original, avg_prox_score.original, total_prox_score.original);
+  fprintf(unique_dafl_log_file, "[stat] [adj] [id %u] [min %f] [max %f] [avg %f] [total %f]\n",
+          queued_paths, min_prox_score.adjusted, max_prox_score.adjusted, avg_prox_score.adjusted, total_prox_score.adjusted);
 
 }
 
@@ -1356,14 +1647,22 @@ static void update_bitmap_score(struct queue_entry* q) {
 
          /* Faster-executing or smaller test cases are favored. */
 
-         if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
+         if (!top_rated[i]->removed) {
 
-         /* Looks like we're going to win. Decrease ref count for the
-            previous winner, discard its trace_bits[] if necessary. */
+            if (fav_factor > top_rated[i]->exec_us * top_rated[i]->len) continue;
 
-         if (!--top_rated[i]->tc_ref) {
-           ck_free(top_rated[i]->trace_mini);
-           top_rated[i]->trace_mini = 0;
+            /* Looks like we're going to win. Decrease ref count for the
+                previous winner, discard its trace_bits[] if necessary. */
+
+            if (!--top_rated[i]->tc_ref) {
+              ck_free(top_rated[i]->trace_mini);
+              top_rated[i]->trace_mini = 0;
+            }
+
+         } else {
+
+           top_rated[i] = NULL;
+
          }
 
        }
@@ -1417,7 +1716,7 @@ static void cull_queue(void) {
      If yes, and if it has a top_rated[] contender, let's use it. */
 
   for (i = 0; i < MAP_SIZE; i++)
-    if (top_rated[i] && (temp_v[i >> 3] & (1 << (i & 7)))) {
+    if (top_rated[i] && !top_rated[i]->removed && (temp_v[i >> 3] & (1 << (i & 7)))) {
 
       u32 j = MAP_SIZE >> 3;
 
@@ -1596,8 +1895,8 @@ static void read_testcases(void) {
 
     // Provide 0 as the proximity score and update later in calibrate_case(),
     // and sort later after the dry-run phase.
-    add_to_queue(fn, st.st_size, passed_det, 0);
-
+    struct proximity_score temp_prox_score = {.original = 0, .adjusted = .0};
+    add_to_queue(fn, st.st_size, passed_det, &temp_prox_score);
   }
 
   free(nl); /* not tracked */
@@ -2764,7 +3063,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
-  q->prox_score  = compute_proximity_score();
+  compute_proximity_score(&q->prox_score, dfg_bits, 1);
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
@@ -2772,10 +3071,12 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   total_bitmap_entries++;
 
   /* Update proximity score information */
-  total_prox_score += q->prox_score;
-  avg_prox_score = total_prox_score / queued_paths;
-  if (min_prox_score > q->prox_score) min_prox_score = q->prox_score;
-  if (max_prox_score < q->prox_score) max_prox_score = q->prox_score;
+  // total_prox_score += q->prox_score.original;
+  // avg_prox_score = total_prox_score / queued_paths;
+  // if (min_prox_score > q->prox_score) min_prox_score = q->prox_score;
+  // if (max_prox_score < q->prox_score) max_prox_score = q->prox_score;
+  update_dfg_score(q);
+  update_dfg_count_map(q);
 
   update_bitmap_score(q);
 
@@ -3353,7 +3654,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  hnb;
   s32 fd;
   u8  keeping = 0, res;
-  u64 prox_score;
+  struct proximity_score prox_score;
 
   if (fault == crash_mode) {
 
@@ -3367,13 +3668,12 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     //   if (crash_mode) total_crashes++;
     //   return 0;
     // }
-    
-      prox_score = compute_proximity_score();
+      compute_proximity_score(&prox_score, dfg_bits, 0);
 
 #ifndef SIMPLE_FILES
 
       fn = alloc_printf("%s/queue/id:%06u,%llu,%s", out_dir, queued_paths,
-                        prox_score, describe_op(hnb));
+                        prox_score.original, describe_op(hnb));
 
 #else
 
@@ -3381,7 +3681,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
-      add_to_queue(fn, len, 0, prox_score);
+      add_to_queue(fn, len, 0, &prox_score);
 
       if (hnb == 2) {
         queue_last->has_new_cov = 1;
@@ -3503,12 +3803,12 @@ keep_as_crash:
       if (!unique_crashes) write_crash_readme();
 
       // Temporary computation for debugging.
-      prox_score = compute_proximity_score();
+      compute_proximity_score(&prox_score, dfg_bits, 0);
 
 #ifndef SIMPLE_FILES
 
       fn = alloc_printf("%s/crashes/id:%06llu,%llu,sig:%02u,%s", out_dir,
-                        total_crashes, prox_score, kill_signal,
+                        total_crashes, prox_score.original, kill_signal,
                         describe_op(0));
 
 #else
@@ -4087,6 +4387,10 @@ static void maybe_delete_out_dir(void) {
   }
 
   fn = alloc_printf("%s/plot_data", out_dir);
+  if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
+  ck_free(fn);
+
+  fn = alloc_printf("%s/unique_dafl.log", out_dir);
   if (unlink(fn) && errno != ENOENT) goto dir_cleanup_failed;
   ck_free(fn);
 
@@ -4928,16 +5232,17 @@ static u32 choose_block_len(u32 limit) {
 
 /* Calculate the factor to multiply to the performance score. This is derived
  * from the proximity scores of the DFG nodes covered by the test case. */
-static double calculate_factor(u64 prox_score) {
+static double calculate_factor(double prox_score) {
 
   double factor;
   double normalized_prox_score, progress_to_tx, T, p;
   u64 cur_ms, t;
 
   if (t_x) { // AFLGo's seed scheduling strategy.
-    if (min_prox_score == max_prox_score) normalized_prox_score = 0.5;
-    else normalized_prox_score = (double) (prox_score - min_prox_score) /
-                                 (double) (max_prox_score - min_prox_score);
+    // min_prox_score == max_prox_score
+    if (compare_proximity_score(&min_prox_score, &max_prox_score) == 0) normalized_prox_score = 0.5;
+    else normalized_prox_score = (double) (prox_score - min_prox_score.adjusted) /
+                                 (double) (max_prox_score.adjusted - min_prox_score.adjusted);
     cur_ms = get_cur_time();
     t = (cur_ms - start_time) / 1000;
     progress_to_tx = ((double) t) / ((double) t_x * 60.0);
@@ -4945,8 +5250,8 @@ static double calculate_factor(u64 prox_score) {
     p = normalized_prox_score * (1.0 - T) + 0.5 * T;
     factor = pow(2.0, 5.0 * 2.0 * (p - 0.5)); // Note log2(MAX_FACTOR) = 5.0
   }
-  else if (no_dfg_schedule || !avg_prox_score) factor = 1.0; // No factor.
-  else factor = ((double) prox_score) / ((double) avg_prox_score); // Default.
+  else if (no_dfg_schedule || !avg_prox_score.original) factor = 1.0; // No factor.
+  else factor = (prox_score) / ((double) avg_prox_score.adjusted); // Default.
 
   return factor;
 
@@ -6341,7 +6646,7 @@ havoc_stage:
   if (!splice_cycle) {
 
     /* Adjust perf_score with the factor derived from the proximity score */
-    u64 prox_score = queue_cur->prox_score;
+    double prox_score = queue_cur->prox_score.adjusted;
     perf_score = (u32) (calculate_factor(prox_score) * (double) perf_score);
 
     stage_name  = "havoc";
@@ -6357,7 +6662,7 @@ havoc_stage:
     perf_score = orig_perf;
 
      /* Adjust perf_score with the factor derived from the proximity score */
-    u64 prox_score = (queue_cur->prox_score + target->prox_score) / 2;
+    double prox_score = (queue_cur->prox_score.adjusted + target->prox_score.adjusted) / 2;
     perf_score = (u32) (calculate_factor(prox_score) * (double) perf_score);
 
     sprintf(tmp, "splice %u", splice_cycle);
@@ -6825,7 +7130,7 @@ retry_splicing:
 
     /* Pick a random queue entry and find it. */
 
-    idx = UR(queued_paths);
+    idx = UR(queued_paths_cur);
 
     idx_div = idx / 100;
     if (idx_div < 1024) {
@@ -7516,6 +7821,13 @@ EXP_ST void setup_dirs_fds(void) {
                      "unique_hangs, max_depth, execs_per_sec\n");
                      /* ignore errors */
 
+  tmp = alloc_printf("%s/unique_dafl.log", out_dir);
+  fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+  unique_dafl_log_file = fdopen(fd, "w");
+  if (!unique_dafl_log_file) PFATAL("fdopen() failed");
+
 }
 
 
@@ -8042,7 +8354,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:r:k:")) > 0)
 
     switch (opt) {
 
@@ -8231,6 +8543,16 @@ int main(int argc, char** argv) {
         }
 
         break;
+      
+      case 'r': /* Parameter to test different proximity score reduction ratio */
+        
+        proximity_score_reduction = atof(optarg);
+        break;
+      
+      case 'k': /* Parameter to test different proximity score allowance threshold for new node */
+        
+        proximity_score_allowance = atoi(optarg);
+        break;
 
       default:
 
@@ -8295,6 +8617,8 @@ int main(int argc, char** argv) {
   setup_post();
   setup_shm();
   init_count_class16();
+  init_global_prox_score();
+  dfg_count_map = ck_alloc(DFG_MAP_SIZE * sizeof(u32));
 
   setup_dirs_fds();
   read_testcases();
@@ -8437,10 +8761,12 @@ stop_fuzzing:
   }
 
   fclose(plot_file);
+  fclose(unique_dafl_log_file);
   destroy_queue();
   destroy_extras();
   ck_free(target_path);
   ck_free(sync_id);
+  ck_free(dfg_count_map);
 
   alloc_report();
 
