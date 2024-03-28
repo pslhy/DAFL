@@ -149,6 +149,9 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with code coverage bitmap    */
 EXP_ST u32* dfg_bits;                 /* SHM with DFG coverage bitmap     */
+EXP_ST u64* dfg_counts;                /* SHM with DFG path count          */
+
+EXP_ST u64 dfg_node_count[DFG_MAP_SIZE];  /* Node counts for DFG              */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -158,6 +161,7 @@ static u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
 static s32 shm_id;                    /* ID of the SHM for code coverage  */
 static s32 shm_id_dfg;                /* ID of the SHM for DFG coverage   */
+static s32 shm_id_dfg_count;          /* ID of the SHM for DFG path count      */
 
 static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
@@ -1131,13 +1135,25 @@ static u32 count_non_255_bytes(u8* mem) {
 static u64 compute_proximity_score(void) {
 
   u64 prox_score = 0;
+  u64 path_score = 0;
   u32 i = DFG_MAP_SIZE;
+
+  while (i--) {
+    if (dfg_counts[i] > 0){
+      dfg_node_count[i]++;
+      path_score += ((dfg_counts[i] - dfg_node_count[i]) * 1000 / dfg_counts[i]);
+    }
+  }
+
+  i = DFG_MAP_SIZE;
 
   while (i--) {
     prox_score += dfg_bits[i];
   }
 
-  return prox_score;
+  path_score = path_score / 1000;
+
+  return (prox_score + path_score);
 
 }
 
@@ -1308,6 +1324,7 @@ static void remove_shm(void) {
 
   shmctl(shm_id, IPC_RMID, NULL);
   shmctl(shm_id_dfg, IPC_RMID, NULL);
+  shmctl(shm_id_dfg_count, IPC_RMID, NULL);
 
 }
 
@@ -1450,6 +1467,7 @@ EXP_ST void setup_shm(void) {
 
   u8* shm_str;
   u8* shm_str_dfg;
+  u8* shm_str_dfg_count;
 
   if (!in_bitmap) memset(virgin_bits, 255, MAP_SIZE);
 
@@ -1459,6 +1477,8 @@ EXP_ST void setup_shm(void) {
   shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
   shm_id_dfg = shmget(IPC_PRIVATE, sizeof(u32) * DFG_MAP_SIZE,
                       IPC_CREAT | IPC_EXCL | 0600);
+  shm_id_dfg_count = shmget(IPC_PRIVATE, sizeof(u64) * DFG_MAP_SIZE,
+                            IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -1466,6 +1486,7 @@ EXP_ST void setup_shm(void) {
 
   shm_str = alloc_printf("%d", shm_id);
   shm_str_dfg = alloc_printf("%d", shm_id_dfg);
+  shm_str_dfg_count = alloc_printf("%d", shm_id_dfg_count);
 
   /* If somebody is asking us to fuzz instrumented binaries in dumb mode,
      we don't want them to detect instrumentation, since we won't be sending
@@ -1474,15 +1495,19 @@ EXP_ST void setup_shm(void) {
 
   if (!dumb_mode) setenv(SHM_ENV_VAR, shm_str, 1);
   if (!dumb_mode) setenv(SHM_ENV_VAR_DFG, shm_str_dfg, 1);
+  if (!dumb_mode) setenv(SHM_ENV_VAR_DFG_COUNT, shm_str_dfg_count, 1);
 
   ck_free(shm_str);
   ck_free(shm_str_dfg);
+  ck_free(shm_str_dfg_count);
 
   trace_bits = shmat(shm_id, NULL, 0);
   dfg_bits = shmat(shm_id_dfg, NULL, 0);
+  dfg_counts = shmat(shm_id_dfg_count, NULL, 0);
 
   if (trace_bits == (void *)-1) PFATAL("shmat() failed");
   if (dfg_bits == (void *)-1) PFATAL("shmat() failed");
+  if (dfg_counts == (void *)-1) PFATAL("shmat() failed");
 
 }
 
@@ -2392,6 +2417,7 @@ static u8 run_target(char** argv, u32 timeout) {
 
   memset(trace_bits, 0, MAP_SIZE);
   memset(dfg_bits, 0, sizeof(u32) * DFG_MAP_SIZE);
+  memset(dfg_counts, 0, sizeof(u64) * DFG_MAP_SIZE);
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
