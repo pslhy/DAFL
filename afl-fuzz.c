@@ -2400,7 +2400,7 @@ EXP_ST void init_forkserver(char** argv) {
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update trace_bits[]. */
 
-static u8 run_target(char** argv, u32 timeout, char* target_path_p, char* env_opt) {
+static u8 run_target(char** argv, u32 timeout, char* env_opt, u8 force_dumb_mode) {
 
   static struct itimerval it;
   static u32 prev_timed_out = 0;
@@ -2425,7 +2425,7 @@ static u8 run_target(char** argv, u32 timeout, char* target_path_p, char* env_op
      execve(). There is a bit of code duplication between here and
      init_forkserver(), but c'est la vie. */
 
-  if (dumb_mode == 1 || no_forkserver) {
+  if (force_dumb_mode == 1 || dumb_mode == 1 || no_forkserver) {
 
     child_pid = fork();
 
@@ -2491,7 +2491,7 @@ static u8 run_target(char** argv, u32 timeout, char* target_path_p, char* env_op
           0
       };
 
-      execve(target_path_p, argv, envp);
+      execve(argv[0], argv, envp);
 
       /* Use a distinctive bitmap value to tell the parent about execv()
          falling through. */
@@ -2535,7 +2535,7 @@ static u8 run_target(char** argv, u32 timeout, char* target_path_p, char* env_op
 
   /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
 
-  if (dumb_mode == 1 || no_forkserver) {
+  if (force_dumb_mode == 1 || dumb_mode == 1 || no_forkserver) {
 
     if (waitpid(child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
 
@@ -2601,7 +2601,7 @@ static u8 run_target(char** argv, u32 timeout, char* target_path_p, char* env_op
     return FAULT_CRASH;
   }
 
-  if ((dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
+  if ((force_dumb_mode == 1 || dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
     return FAULT_ERROR;
 
   /* It makes sense to account for the slowest units only if the testcase was run
@@ -2733,7 +2733,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     write_to_testcase(use_mem, q->len);
 
-    fault = run_target(argv, use_tmout, target_path, "USELESS=0");
+    fault = run_target(argv, use_tmout, "USELESS=0", 0);
 
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
@@ -3282,7 +3282,8 @@ static u8 check_coverage(u8 crashed, char** argv, void* mem, u32 len) {
   u8 *tmpfile = "";
   u8 *tmpfile_env = "";
   u8 *cmd = "";
-  u8 *covered = "";
+  u8 covered[100] = "";
+  u8 *tmp_argv1 = "";
 
   u8 fault_tmp;
   u32 line = 0;
@@ -3301,11 +3302,14 @@ static u8 check_coverage(u8 crashed, char** argv, void* mem, u32 len) {
   // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
   unlink(tmpfile);
   write_to_testcase(mem, len);
-  fault_tmp = run_target(argv, 10000, covexe, tmpfile_env);
+  tmp_argv1 = argv[0];
+  argv[0] = covexe;
+  fault_tmp = run_target(argv, 10000, tmpfile_env, 1);
+  argv[0] = tmp_argv1;
 
-  if (access(tmpfile, F_OK) != 0) FATAL("Cannot access tmpfile!");
+  if (access(tmpfile, F_OK) == -1) return 0;
 
-  if (crashed) {
+  if (crashed == 1) {
     // Read last line of covdir + "/__tmp_file" with tail -n 1 command
     cmd = alloc_printf("tail -n 1 %s", tmpfile);
     FILE *fp = popen(cmd, "r");
@@ -3338,6 +3342,7 @@ static void get_valuation(u8 crashed, char** argv, void* mem, u32 len) {
   u8 *tmpfile_env = "";
   u8 *cmd = "";
   u8 fault_tmp;
+  u8 *tmp_argv1 = "";
   u32 num = 1 + UR(ARITH_MAX);
 
   if(!getenv("PACFIX_VAL_EXE")) return;
@@ -3350,11 +3355,14 @@ static void get_valuation(u8 crashed, char** argv, void* mem, u32 len) {
   // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
   unlink(tmpfile);
   write_to_testcase(mem, len);
-  fault_tmp = run_target(argv, 10000, valexe, tmpfile_env);
+  tmp_argv1 = argv[0];
+  argv[0] = valexe;
+  fault_tmp = run_target(argv, 10000, tmpfile_env, 1);
+  argv[0] = tmp_argv1;
 
-  if (access(tmpfile, F_OK) != 0) FATAL("Cannot access tmpfile!");
+  if (access(tmpfile, F_OK) != 0) return;
 
-  if (crashed) {
+  if (crashed == 1) {
      cmd = alloc_printf("mv %s %s/memory/neg/id:%06llu", tmpfile, out_dir, total_saved_crashes);
      total_saved_crashes++;
   }
@@ -3469,7 +3477,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
         u8 new_fault;
         write_to_testcase(mem, len);
-        new_fault = run_target(argv, hang_tmout, target_path, "USELESS=0");
+        new_fault = run_target(argv, hang_tmout, "USELESS=0", 0);
 
         /* A corner case that one user reported bumping into: increasing the
            timeout actually uncovers a crash. Make sure we don't discard it if
@@ -4781,7 +4789,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
       write_with_gap(in_buf, q->len, remove_pos, trim_avail);
 
-      fault = run_target(argv, exec_tmout, target_path, "USELESS=0");
+      fault = run_target(argv, exec_tmout, "USELESS=0", 0);
       trim_execs++;
 
       if (stop_soon || fault == FAULT_ERROR) goto abort_trimming;
@@ -4874,7 +4882,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   write_to_testcase(out_buf, len);
 
-  fault = run_target(argv, exec_tmout, target_path, "USELESS=0");
+  fault = run_target(argv, exec_tmout, "USELESS=0", 0);
 
   if (stop_soon) return 1;
 
@@ -7050,7 +7058,7 @@ static void sync_fuzzers(char** argv) {
 
         write_to_testcase(mem, st.st_size);
 
-        fault = run_target(argv, exec_tmout, target_path, "USELESS=0");
+        fault = run_target(argv, exec_tmout, "USELESS=0", 0);
 
         if (stop_soon) return;
 
