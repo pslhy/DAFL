@@ -1141,7 +1141,7 @@ static u64 compute_proximity_score(void) {
   while (i--) {
     if (dfg_counts[i] > 0){
       dfg_node_count[i]++;
-      path_score += ((dfg_counts[i] - dfg_node_count[i]) * 1000 / dfg_counts[i]);
+      path_score += dfg_node_count[i] * 1000 / dfg_counts[i];
     }
   }
 
@@ -1151,9 +1151,10 @@ static u64 compute_proximity_score(void) {
     prox_score += dfg_bits[i];
   }
 
-  path_score = path_score / 1000;
+  path_score = path_score * 14 / 10000 ;
 
-  return (prox_score + path_score);
+  if (prox_score < path_score) return 0;
+  return (prox_score - path_score);
 
 }
 
