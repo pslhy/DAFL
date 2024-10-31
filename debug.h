@@ -173,16 +173,6 @@
 #  define SAYF(x...)    fprintf(stderr, x)
 #endif /* ^MESSAGES_TO_STDOUT */
 
-/* Emit a log message. */
-
-#define LOGF(x...) do { \
-    if (not_on_tty) \
-      ACTF_NNL(x); \
-    if (unique_dafl_log_file) { \
-      fprintf(unique_dafl_log_file, x); \
-    } \
-  } while (0)
-
 /* Show a prefixed warning. */
 
 #define WARNF(x...) do { \

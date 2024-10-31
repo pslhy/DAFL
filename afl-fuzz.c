@@ -137,8 +137,8 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            run_over10m,               /* Run time over 10 minutes?        */
            persistent_mode,           /* Running in persistent mode?      */
            deferred_mode,             /* Deferred forkserver mode?        */
-           fast_cal;                  /* Try to calibrate faster?         */
-           pacfuzz_mode;              /* PACFuzz mode                     */
+           fast_cal,                  /* Try to calibrate faster?         */
+           pacfuzz_mode,              /* PACFuzz mode                     */
            vertical_type;             /* 1 for even, 2 for original       */
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
@@ -190,7 +190,7 @@ EXP_ST u32 queued_paths,              /* Total number of queued testcases */
            havoc_div = 1;             /* Cycle count divisor for havoc    */
 
 EXP_ST u64 total_crashes,             /* Total number of crashes          */
-           total_normals              /* Total number of normal exits     */
+           total_normals,             /* Total number of normal exits     */
            unique_crashes,            /* Crashes with unique signatures   */
            total_saved_crashes,       /* Number of crash states saved     */
            total_saved_positives,     /* Number of positive states saved  */
@@ -375,6 +375,16 @@ enum {
   /* 04 */ FAULT_NOINST,
   /* 05 */ FAULT_NOBITS
 };
+
+/* Emit a log message. */
+
+#define LOGF(x...) do { \
+    if (not_on_tty) \
+      ACTF_NNL(x); \
+    if (log_file) { \
+      fprintf(log_file, x); \
+    } \
+  } while (0)
 
 
 /* Get unix time in milliseconds */
@@ -834,12 +844,6 @@ static u8 dominates(struct queue_entry* q1, struct queue_entry* q2) {
   }
 }
 
-static void get_pareto_from_recycled() {
-  pareto_size = 0; pareto_frontier = {NULL};
-  for (int i = 0; i < recycled_size; i++) {
-    update_pareto_frontier(recycled_queue[i]);
-  }
-}
 
 static void add_recycled_queue(struct queue_entry* entry) {
   recycled_queue[recycled_size++] = entry;
@@ -862,15 +866,16 @@ static struct queue_entry* pop_pareto_frontier() {
 static void update_pareto_frontier (struct queue_entry* new_entry) {
   int new_frontier_size = 0;
   struct queue_entry* temp_frontier[MAX_PARETO_FRONT];
+  u8 is_dominated = 0;
   
   for (int i = 0; i < pareto_size; i++) {
-    if (dominates(frontier[i], new_entry)) {
+    if (dominates(pareto_frontier[i], new_entry)) {
       is_dominated = 1;
       break;
     }
     
-    if (!dominates(new_entry, frontier[i])) {
-      temp_frontier[new_frontier_size++] = frontier[i];
+    if (!dominates(new_entry, pareto_frontier[i])) {
+      temp_frontier[new_frontier_size++] = pareto_frontier[i];
     }
   }
   
@@ -885,6 +890,14 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
   pareto_size = new_frontier_size;
 
   LOGF("[PacFuzz] [pareto] Pareto frontier updated with %d entries", pareto_size);
+}
+
+static void get_pareto_from_recycled() {
+  struct queue_entry* empty_queue[MAX_PARETO_FRONT];
+  pareto_size = 0; pareto_frontier = empty_queue;
+  for (int i = 0; i < recycled_size; i++) {
+    update_pareto_frontier(recycled_queue[i]);
+  }
 }
 
 /* Insert a test case to the queue, preserving the sorted order based on the
