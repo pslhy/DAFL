@@ -2718,7 +2718,7 @@ static u8 run_target(char** argv, u32 timeout, char* env_opt, u8 force_dumbmode)
 
   /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
 
-  if (force_dumb_mode == 1 || dumb_mode == 1 || no_forkserver) {
+  if (force_dumbmode == 1 || dumb_mode == 1 || no_forkserver) {
 
     if (waitpid(child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
 
@@ -2784,7 +2784,7 @@ static u8 run_target(char** argv, u32 timeout, char* env_opt, u8 force_dumbmode)
     return FAULT_CRASH;
   }
 
-  if ((force_dumb_mode == 1  || dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
+  if ((force_dumbmode == 1  || dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
     return FAULT_ERROR;
 
   /* It makes sense to account for the slowest units only if the testcase was run
