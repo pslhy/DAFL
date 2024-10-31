@@ -843,26 +843,57 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 }
 
+/* PacFuzz: Get target node id and score */
+
+static void init_dfg() {
+  char* dfg_node_info_file = getenv("DAFL_DFG_SCORE");
+  FILE *file = fopen(dfg_node_info_file, "r");
+
+  if (!file) {
+    FATAL("Unable to open DFG node info file");
+  }
+
+  u32 idx = 0, max_score = 0;
+  u32 score, max_paths;
+  u8 node_name[256];
+
+  while(fscanf(file, "%d %d %255s", &score, &max_paths, node_name) == 3) {
+    if (score > max_score) {
+      max_score = score;
+      dfg_target_idx = idx;
+    }
+    idx++;
+  }
+
+  fclose(file);
+  
+  LOGF("[PacFuzz][Init] Check dfg_node_info_map target: %u, max_score: %u", dfg_target_idx, max_score);
+}
+
+/* PacFuzz: Add a meory valuation hash to the hash map. */
+
 static void add_memval_hash(u32 hashkey) {
     struct hash_entry *entry;
-    HASH_FIND_INT(memval_hash, &hashkey, entry);  // 키가 이미 있는지 확인
+    HASH_FIND_INT(memval_hash, &hashkey, entry);
 
-    if (entry == NULL) {  // 키가 없으면 새로 추가
+    if (entry == NULL) {
         entry = (struct hash_entry*)malloc(sizeof(struct hash_entry));
         entry->key = hashkey;
         entry->is_used = 1;
-        HASH_ADD_INT(memval_hash, key, entry);  // 해시맵에 추가
+        HASH_ADD_INT(memval_hash, key, entry);
     }
 }
 
-// 키가 사용되었는지 확인
+/* PacFuzz: Check if a memory valuation hash is used. */
+
 int is_memval_used(u32 hashkey) {
     struct hash_entry *entry;
-    HASH_FIND_INT(memval_hash, &hashkey, entry);  // 키 조회
+    HASH_FIND_INT(memval_hash, &hashkey, entry);
     return (entry != NULL) ? entry->is_used : 0;
 }
 
-// 해시맵 해제
+/* PacFuzz: Free the memory valuation hashmap. */
+
 void free_memval_hash() {
     struct hash_entry *entry, *tmp;
     HASH_ITER(hh, memval_hash, entry, tmp) {
@@ -8531,6 +8562,7 @@ int main(int argc, char** argv) {
   setup_post();
   setup_shm();
   init_count_class16();
+  init_dfg();
 
   setup_dirs_fds();
   read_testcases();
