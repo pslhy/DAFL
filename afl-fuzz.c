@@ -867,7 +867,7 @@ static void init_dfg() {
 
   fclose(file);
   
-  LOGF("[PacFuzz][Init] Check dfg_node_info_map target: %u, max_score: %u", dfg_target_idx, max_score);
+  LOGF("[PacFuzz][Init] Check dfg_node_info_map target: %u, max_score: %u\n", dfg_target_idx, max_score);
 }
 
 /* PacFuzz: Add a meory valuation hash to the hash map. */
@@ -956,7 +956,7 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
 
   pareto_size = new_frontier_size;
 
-  LOGF("[PacFuzz] [pareto] Pareto frontier updated with %d entries", pareto_size);
+  LOGF("[PacFuzz] [pareto] Pareto frontier updated with %d entries\n", pareto_size);
 }
 
 static void get_pareto_from_recycled() {
@@ -3195,12 +3195,16 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
 static void get_valuation(char** argv, u8* use_mem, u32 len) {
   // Check current run is covering target line
   if (check_target_covered()) {
+    LOGF("[PacFuzz] [get_valuation] [target-covered] [time %llu]\n", get_cur_time() - start_time);
     u32 val_hash;
     u8 *valuation_file;
     u8 success = run_valuation(1, argv, use_mem, len, &val_hash, &valuation_file);
     if (success) {
       save_valuation(val_hash, valuation_file);
     }
+  }
+  else {
+    LOGF("[PacFuzz] [get_valuation] [target-not-covered] [time %llu]\n", get_cur_time() - start_time);
   }
 }
 
