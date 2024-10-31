@@ -332,8 +332,8 @@ struct hash_entry {
     UT_hash_handle hh;                /* Hash handler                     */
 };
 
-static HashEntry *dfg_hash = NULL;    /* Hash map for DFG usage           */
-static HashEntry *memval_hash = NULL; /* Hash map for memory values       */
+static struct hash_entry *dfg_hash = NULL;    /* Hash map for DFG usage           */
+static struct hash_entry *memval_hash = NULL; /* Hash map for memory values       */
 
 static u8* (*post_handler)(u8* buf, u32* len);
 
@@ -844,11 +844,11 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 }
 
 static void add_memval_hash(u32 hashkey) {
-    HashEntry *entry;
+    struct hash_entry *entry;
     HASH_FIND_INT(memval_hash, &hashkey, entry);  // 키가 이미 있는지 확인
 
     if (entry == NULL) {  // 키가 없으면 새로 추가
-        entry = (HashEntry*)malloc(sizeof(HashEntry));
+        entry = (struct hash_entry*)malloc(sizeof(struct hash_entry));
         entry->key = hashkey;
         entry->is_used = 1;
         HASH_ADD_INT(memval_hash, key, entry);  // 해시맵에 추가
@@ -857,14 +857,14 @@ static void add_memval_hash(u32 hashkey) {
 
 // 키가 사용되었는지 확인
 int is_memval_used(u32 hashkey) {
-    HashEntry *entry;
+    struct hash_entry *entry;
     HASH_FIND_INT(memval_hash, &hashkey, entry);  // 키 조회
     return (entry != NULL) ? entry->is_used : 0;
 }
 
 // 해시맵 해제
 void free_memval_hash() {
-    HashEntry *entry, *tmp;
+    struct hash_entry *entry, *tmp;
     HASH_ITER(hh, memval_hash, entry, tmp) {
         HASH_DEL(memval_hash, entry);
         free(entry);
