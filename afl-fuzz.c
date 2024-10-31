@@ -107,6 +107,8 @@ EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
 EXP_ST u32 exec_tmout = EXEC_TIMEOUT; /* Configurable exec timeout (ms)   */
 static u32 hang_tmout = EXEC_TIMEOUT; /* Timeout used for hang det (ms)   */
 
+EXP_ST u32 horizontal_time = 60;      /* Horizontal fuzzing time (sec)    */
+
 EXP_ST u64 mem_limit  = MEM_LIMIT;    /* Memory cap for child (MB)        */
 
 static u32 stats_update_freq = 1;     /* Stats update frequency (execs)   */
@@ -136,6 +138,8 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            persistent_mode,           /* Running in persistent mode?      */
            deferred_mode,             /* Deferred forkserver mode?        */
            fast_cal;                  /* Try to calibrate faster?         */
+           pacfuzz_mode;              /* PACFuzz mode                     */
+           vertical_type;             /* 1 for even, 2 for original       */
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
@@ -149,6 +153,11 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with code coverage bitmap    */
 EXP_ST u32* dfg_bits;                 /* SHM with DFG coverage bitmap     */
+
+EXP_ST u32 dfg_target_idx;            /* Index of the target DFG node     */
+EXP_ST u64 dfg_cnt[DFG_MAP_SIZE];     /* DFG node hit count               */
+EXP_ST u8  dfg_hash[4294967296];      /* DFG node hash table              */
+EXP_ST u8  memval_hash[4294967296];   /* Memory valuation hash table      */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -181,7 +190,10 @@ EXP_ST u32 queued_paths,              /* Total number of queued testcases */
            havoc_div = 1;             /* Cycle count divisor for havoc    */
 
 EXP_ST u64 total_crashes,             /* Total number of crashes          */
+           total_normals              /* Total number of normal exits     */
            unique_crashes,            /* Crashes with unique signatures   */
+           total_saved_crashes,       /* Number of crash states saved     */
+           total_saved_positives,     /* Number of positive states saved  */
            total_tmouts,              /* Total number of timeouts         */
            unique_tmouts,             /* Timeouts with unique signatures  */
            unique_hangs,              /* Hangs with unique signatures     */
@@ -238,6 +250,7 @@ static s32 cpu_aff = -1;       	      /* Selected CPU core                */
 #endif /* HAVE_AFFINITY */
 
 static FILE* plot_file;               /* Gnuplot output file              */
+static FILE* log_file;                /* Log file                         */
 
 struct queue_entry {
 
@@ -258,6 +271,7 @@ struct queue_entry {
       exec_cksum;                     /* Checksum of the execution trace  */
 
   u64 prox_score;                     /* Proximity score of the test case */
+  u64 diverse_score;                  /* Diversity score of the test case */
   u32 entry_id;                       /* The ID assigned to the test case */
 
   u64 exec_us,                        /* Execution time (us)              */
@@ -283,6 +297,13 @@ static struct queue_entry*
 static struct queue_entry*
   top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
 
+static struct queue_entry*
+  pareto_frontier[MAX_PARETO_FRONT];  /* Pareto frontier for seed select  */
+static struct queue_entry*
+  recycled_queue[MAX_PARETO_FRONT];   /* Recycled entries for quick reuse */
+static u32 pareto_size = 0;           /* Number of entries in the pareto  */
+static u32 recycled_size = 0;         /* Number of entries in the recycle */
+
 struct extra_data {
   u8* data;                           /* Dictionary token data            */
   u32 len;                            /* Dictionary token length          */
@@ -299,7 +320,11 @@ static u64 max_prox_score = 0;        /* Maximum score of the seed queue  */
 static u64 min_prox_score = U64_MAX;  /* Minimum score of the seed queue  */
 static u64 total_prox_score = 0;      /* Sum of proximity scores          */
 static u64 avg_prox_score = 0;        /* Average of proximity scores      */
-static u32 no_dfg_schedule = 0;      /* No DFG-based seed scheduling     */
+static u64 max_div_score = 0;         /* Maximum diversity score          */
+static u64 min_div_score = U64_MAX;   /* Minimum diversity score          */
+static u64 total_div_score = 0;       /* Sum of diversity scores          */
+static u64 avg_div_score = 0;         /* Average of diversity scores      */
+static u32 no_dfg_schedule = 0;       /* No DFG-based seed scheduling     */
 static u32 t_x = 0;                   /* To test AFLGo's scheduling       */
 
 static u8* (*post_handler)(u8* buf, u32* len);
@@ -800,6 +825,67 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 }
 
+static u8 dominates(struct queue_entry* q1, struct queue_entry* q2) {
+  if((q1->prox_score >= q2->prox_score && q1->diverse_score >= q2->diverse_score) && 
+     (q1->prox_score > q2->prox_score || q1->diverse_score > q2->diverse_score)) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
+static void get_pareto_from_recycled() {
+  pareto_size = 0; pareto_frontier = {NULL};
+  for (int i = 0; i < recycled_size; i++) {
+    update_pareto_frontier(recycled_queue[i]);
+  }
+}
+
+static void add_recycled_queue(struct queue_entry* entry) {
+  recycled_queue[recycled_size++] = entry;
+}
+
+static struct queue_entry* pop_pareto_frontier() {
+  if (pareto_size == 0) {
+    return NULL;
+  }
+
+  struct queue_entry* entry = pareto_frontier[0];
+  pareto_frontier[0] = pareto_frontier[pareto_size - 1];
+  pareto_size--;
+
+  add_recycled_queue(entry);
+
+  return entry;
+}
+
+static void update_pareto_frontier (struct queue_entry* new_entry) {
+  int new_frontier_size = 0;
+  struct queue_entry* temp_frontier[MAX_PARETO_FRONT];
+  
+  for (int i = 0; i < pareto_size; i++) {
+    if (dominates(frontier[i], new_entry)) {
+      is_dominated = 1;
+      break;
+    }
+    
+    if (!dominates(new_entry, frontier[i])) {
+      temp_frontier[new_frontier_size++] = frontier[i];
+    }
+  }
+  
+  if (!is_dominated) {
+    temp_frontier[new_frontier_size++] = new_entry;
+  }
+  
+  for (int i = 0; i < new_frontier_size; i++) {
+        pareto_frontier[i] = temp_frontier[i];
+  }
+
+  pareto_size = new_frontier_size;
+
+  LOGF("[PacFuzz] [pareto] Pareto frontier updated with %d entries", pareto_size);
+}
 
 /* Insert a test case to the queue, preserving the sorted order based on the
  * proximity score. Updates global variables 'queue', 'shortcut_per_100', and
@@ -813,7 +899,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
     first_unhandled = NULL;
 
     // Special case handling when we have to insert at the front.
-    if (queue->prox_score < q->prox_score) {
+    if (queue->diverse_score < q->diverse_score) {
       q->next = queue;
       queue = q;
       is_inserted = 1;
@@ -833,7 +919,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
       if (!is_inserted) {
         // If reached the end or found the proper position, insert there.
-        if (!q_probe->next || q_probe->next->prox_score < q->prox_score) {
+        if (!q_probe->next || q_probe->next->diverse_score < q->diverse_score) {
           q->next = q_probe->next;
           q_probe->next = q;
           is_inserted = 1;
@@ -850,7 +936,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
 /* Append new test case to the queue. */
 
-static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
+static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u64 diverse_score) {
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -859,6 +945,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
   q->prox_score   = prox_score;
+  q->diverse_score = diverse_score;
   q->entry_id     = queued_paths;
 
   if (q->depth > max_depth) max_depth = q->depth;
@@ -1125,6 +1212,14 @@ static u32 count_non_255_bytes(u8* mem) {
 
 }
 
+static u8 check_target_covered() {
+  return dfg_bits[dfg_target_idx] != 0;
+}
+
+static u32 get_dfg_hash() {
+  return hash32(dfg_bits, DFG_MAP_SIZE * sizeof(u32), HASH_CONST);
+}
+
 static u64 compute_proximity_score(void) {
 
   u64 prox_score = 0;
@@ -1135,7 +1230,33 @@ static u64 compute_proximity_score(void) {
   }
 
   return prox_score;
+}
 
+static void update_dfg_node_cnt(void) {
+    u32 i = DFG_MAP_SIZE;
+
+    while (i--) {
+      if (dfg_bits[i] > 0) {
+        dfg_cnt[i]++;
+      }
+    }
+}
+
+/* PacFuzz: compute the diversity score of the current execution path. 
+   Should be called after update_dfg_node_cnt. */
+
+static u64 compute_diversity_score(void) {
+
+  double div_score = 0;
+  u32 i = DFG_MAP_SIZE;
+
+  while (i--) {
+    if (dfg_bits[i] > 0) {
+      div_score += dfg_bits[i] * pow(0.9, dfg_cnt[i]);
+    }
+  }
+
+  return div_score;
 }
 
 /* Destructively simplify trace by eliminating hit count information
@@ -1593,7 +1714,7 @@ static void read_testcases(void) {
 
     // Provide 0 as the proximity score and update later in calibrate_case(),
     // and sort later after the dry-run phase.
-    add_to_queue(fn, st.st_size, passed_det, 0);
+    add_to_queue(fn, st.st_size, passed_det, 0, 0);
 
   }
 
@@ -2186,9 +2307,17 @@ EXP_ST void init_forkserver(char** argv) {
     /* Set sane defaults for ASAN if nothing else specified. */
 
     setenv("ASAN_OPTIONS", "abort_on_error=1:"
+                           "halt_on_error=1:"
                            "detect_leaks=0:"
                            "symbolize=0:"
                            "allocator_may_return_null=1", 0);
+
+    /* Set sane defaults for UBSAN if nothing else specified. */
+
+    setenv("UBSAN_OPTIONS", "abort_on_error=1:"
+                            "halt_on_error=1:"
+                            "exitcode=54:"
+                            "print_stacktrace=1", 0);
 
     /* MSAN is tricky, because it doesn't support abort_on_error=1 at this
        point. So, we do this in a very hacky way. */
@@ -2371,8 +2500,11 @@ EXP_ST void init_forkserver(char** argv) {
 
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update trace_bits[]. */
+/* PacFuzz: env_opt and force_dumbmode are added 
+   to the function signature due to pass env vars to valuation binary 
+   and force dumb mode. */
 
-static u8 run_target(char** argv, u32 timeout) {
+static u8 run_target(char** argv, u32 timeout, char* env_opt, u8 force_dumbmode) {
 
   static struct itimerval it;
   static u32 prev_timed_out = 0;
@@ -2396,7 +2528,7 @@ static u8 run_target(char** argv, u32 timeout) {
      execve(). There is a bit of code duplication between here and
      init_forkserver(), but c'est la vie. */
 
-  if (dumb_mode == 1 || no_forkserver) {
+  if (dumb_mode == 1 || no_forkserver || force_dumbmode == 1) {
 
     child_pid = fork();
 
@@ -2454,16 +2586,16 @@ static u8 run_target(char** argv, u32 timeout) {
 
       /* Set sane defaults for ASAN if nothing else specified. */
 
-      setenv("ASAN_OPTIONS", "abort_on_error=1:"
-                             "detect_leaks=0:"
-                             "symbolize=0:"
-                             "allocator_may_return_null=1", 0);
+      char *envp[] =
+      {
+          "ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0:symbolize=0:allocator_may_return_null=1",
+          "MSAN_OPTIONS=exit_code=86:halt_on_error=1:symbolize=0:msan_track_origins=0",
+          "UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:exit_code=54:print_stacktrace=1",
+          env_opt,
+          0
+      };
 
-      setenv("MSAN_OPTIONS", "exit_code=" STRINGIFY(MSAN_ERROR) ":"
-                             "symbolize=0:"
-                             "msan_track_origins=0", 0);
-
-      execv(target_path, argv);
+      execve(argv[0], argv, envp);
 
       /* Use a distinctive bitmap value to tell the parent about execv()
          falling through. */
@@ -2705,7 +2837,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
     write_to_testcase(use_mem, q->len);
 
-    fault = run_target(argv, use_tmout);
+    fault = run_target(argv, use_tmout, "USELESS=0", 0);
 
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
@@ -2763,8 +2895,12 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
   q->prox_score  = compute_proximity_score();
+  update_dfg_node_cnt();
+  q->diverse_score = compute_diversity_score();
   q->handicap    = handicap;
   q->cal_failed  = 0;
+
+  update_pareto_frontier(q);
 
   total_bitmap_size += q->bitmap_size;
   total_bitmap_entries++;
@@ -2774,6 +2910,10 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   avg_prox_score = total_prox_score / queued_paths;
   if (min_prox_score > q->prox_score) min_prox_score = q->prox_score;
   if (max_prox_score < q->prox_score) max_prox_score = q->prox_score;
+  total_diverse_score += q->diverse_score;
+  avg_diverse_score = total_diverse_score / queued_paths;
+  if (min_diverse_score > q->diverse_score) min_diverse_score = q->diverse_score;
+  if (max_diverse_score < q->diverse_score) max_diverse_score = q->diverse_score;
 
   update_bitmap_score(q);
 
@@ -2829,6 +2969,160 @@ static void check_map_coverage(void) {
 
 }
 
+/* PacFuzz: file hash function */
+
+static u32 hash_file(u8 *filename) {
+
+  FILE *file = fopen(filename, "r");
+
+  if (!file) {
+    WARNF("Cannot open file %s", filename);
+    return 0;
+  }
+
+  fseek(file, 0, SEEK_END);
+  u64 length = ftell(file);
+  fseek(file, 0, SEEK_SET);
+
+  u64 max_read = 1 << 25; // 32MB
+  length = length < max_read ? length : max_read;
+
+  u8 *buf = ck_alloc_nozero(length);
+  fread(buf, 1, length, file);
+  fclose(file);
+
+  u32 hash = hash32(buf, length, HASH_CONST);
+  ck_free(buf);
+  return hash;
+
+}
+
+/* PacFuzz: check memory valuation is for crashed or not 
+   If the valuation is for crashed, the file ends with "----------------------------"
+   If the valuation is for non-crashed, the file ends with "Passed" */
+
+static u8 is_crashed(u8 *filename) {
+  
+    FILE *file = fopen(filename, "r");
+  
+    if (!file) {
+      WARNF("Cannot open file %s", filename);
+      return 0;
+    }
+  
+    fseek(file, 0, SEEK_END);
+    u64 length = ftell(file);
+    fseek(file, 0, SEEK_SET);
+  
+    u8 *buf = ck_alloc_nozero(length);
+    fread(buf, 1, length, file);
+    fclose(file);
+  
+    u8 *end = buf + length - 1;
+    while (end > buf && *end == '\n') end--;
+    while (end > buf && *end == '\r') end--;
+  
+    u8 crashed = 0;
+    if (end - buf > 28 && !strncmp(end - 28, "----------------------------", 28)) {
+      crashed = 1;
+    } else if (end - buf > 6 && !strncmp(end - 6, "Passed", 6)) {
+      crashed = 0;
+    }
+  
+    ck_free(buf);
+    return crashed;
+}
+
+/* PacFuzz: save valuation function */
+
+static void save_valuation(u32 val_hash, u8 *valuation_file) {
+  u8 crashed = is_crashed(valuation_file);
+  u8 *target_file = alloc_printf("memory/%s/id:%06llu", crashed ? "neg" : "pos",
+                                  crashed ? total_saved_crashes : total_saved_positives);
+  LOGF("[PacFuzz] [mem] [%s] [seed %d] [entry %d] [id %llu] [hash %u] [time %llu] [file %s]\n", crashed == 1 ? "neg" : "pos", queue_cur ? queue_cur->entry_id : -1, queue_last ? queue_last->entry_id : -1,
+       crashed ? total_saved_crashes : total_saved_positives, hash, get_cur_time() - start_time, target_file);
+  u8 *target_file_full = alloc_printf("%s/%s", out_dir, target_file);
+  rename(valuation_file, target_file_full);
+  ck_free(valuation_file);
+  ck_free(target_file);
+  ck_free(target_file_full);
+  if (crashed) {
+    total_saved_crashes++;
+  } else {
+    total_saved_positives++;
+  }
+}
+
+/* PacFuzz: get valuation function */
+
+static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_hash, u8 **valuation_file) {
+
+  u8 *valexe = "";
+  u8 *covdir = "";
+  u8 *tmpfile = "";
+  u8 *tmpfile_env = "";
+  u8 fault_tmp;
+  u8 *tmp_argv1 = "";
+  u32 num = 1 + UR(ARITH_MAX);
+
+  *val_hash = 0;
+  *valuation_file = NULL;
+
+  if(!getenv("PACFIX_VAL_EXE")) return 0;
+  if(!getenv("PACFIX_COV_DIR")) return 0;
+
+  valexe = getenv("PACFIX_VAL_EXE");
+  covdir = getenv("PACFIX_COV_DIR");
+
+  tmpfile = alloc_printf((crashed ? "%s/__valuation_file_%llu" : "%s/__valuation_file_noncrash_%llu"), covdir, (crashed ? total_saved_crashes : total_saved_positives));
+  tmpfile_env = alloc_printf("PACFIX_FILENAME=%s", tmpfile);
+
+  // Remove covdir + "/__tmp_file" (It might not exist, but that's okay)
+  chmod(tmpfile,0777);
+  u8 error_code = remove(tmpfile);
+
+  write_to_testcase(mem, len);
+
+  tmp_argv1 = argv[0];
+  argv[0] = valexe;
+  fault_tmp = run_target(argv, 10000, tmpfile_env, 1);
+  argv[0] = tmp_argv1;
+  ck_free(tmpfile_env);
+
+  if (fault_tmp == FAULT_TMOUT || access(tmpfile, F_OK) != 0) {
+    LOGF("[PacFuzz] [run_valuation] [timeout %d] [no-file %d] [time %llu]\n", fault_tmp == FAULT_TMOUT, access(tmpfile, F_OK) != 0, get_cur_time() - start_time);
+    ck_free(tmpfile);
+    return 0;
+  }
+
+  u32 hash = hash_file(tmpfile);
+
+  // Check if the hash is already in the hash table
+
+  if (memval_hash[hash] != 0) {
+    LOGF("[PacFuzz] [run_valuation] [hash %u] [already-exist] [time %llu]\n", hash, get_cur_time() - start_time);
+    remove(tmpfile);
+    ck_free(tmpfile);
+    return 0;
+  }
+
+  memval_hash[hash] = 1;
+  *valuation_file = tmpfile;
+  *val_hash = hash;
+  return 1;
+}
+
+static void get_valuation(char** argv, u8* use_mem, u32 len) {
+  // Check current run is covering target line
+  if (check_target_covered()) {
+    u32 val_hash;
+    u8 *valuation_file;
+    u8 success = run_valuation(1, argv, use_mem, len, &val_hash, &valuation_file);
+    if (success) {
+      save_valuation(val_hash, valuation_file);
+    }
+  }
+}
 
 /* Perform dry run of all test cases to confirm that the app is working as
    expected. This is done only for the initial inputs, and only once. */
@@ -2874,6 +3168,8 @@ static void perform_dry_run(char** argv) {
 
         if (q == queue) check_map_coverage();
 
+        get_valuation(argv, use_mem, q->len);
+
         if (crash_mode) FATAL("Test case '%s' does *NOT* crash", fn);
 
         break;
@@ -2918,6 +3214,7 @@ static void perform_dry_run(char** argv) {
         }
 
       case FAULT_CRASH:
+        get_valuation(argv, use_mem, q->len);
 
         if (crash_mode) break;
 
@@ -3259,7 +3556,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  hnb;
   s32 fd;
   u8  keeping = 0, res;
-  u64 prox_score;
+  u64 prox_score, div_score;
 
   if (fault == crash_mode) {
 
@@ -3272,6 +3569,10 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     }
 
     prox_score = compute_proximity_score();
+    // PacFuzz: We deleted computing diversity score because it calculate at calibrate_case
+    // update_dfg_node_cnt();
+    // div_score = compute_diversity_score();
+
 
 #ifndef SIMPLE_FILES
 
@@ -3284,7 +3585,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
-    add_to_queue(fn, len, 0, prox_score);
+    add_to_queue(fn, len, 0, prox_score, 0);
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
@@ -3309,6 +3610,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     keeping = 1;
 
   }
+
+  get_valuation(argv, use_mem, q->len);
 
   switch (fault) {
 
@@ -3345,7 +3648,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
         u8 new_fault;
         write_to_testcase(mem, len);
-        new_fault = run_target(argv, hang_tmout);
+        new_fault = run_target(argv, hang_tmout, "USELESS=0", 0);
 
         /* A corner case that one user reported bumping into: increasing the
            timeout actually uncovers a crash. Make sure we don't discard it if
@@ -3422,6 +3725,23 @@ keep_as_crash:
       last_crash_time = get_cur_time();
       last_crash_execs = total_execs;
 
+      break;
+    
+    case FAULT_NONE:
+      total_normals++;
+
+#ifndef SIMPLE_FILES
+
+      fn = alloc_printf("%s/normals/id:%06llu,%llu,sig:%02u,%s", out_dir,
+                        total_normals, prox_score, kill_signal,
+                        describe_op(0));
+
+#else
+
+      fn = alloc_printf("%s/normals/id_%06llu_%02u", out_dir, total_normals,
+                        kill_signal);
+
+#endif /* ^!SIMPLE_FILES */
       break;
 
     case FAULT_ERROR: FATAL("Unable to execute target application");
@@ -4633,7 +4953,7 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
       write_with_gap(in_buf, q->len, remove_pos, trim_avail);
 
-      fault = run_target(argv, exec_tmout);
+      fault = run_target(argv, exec_tmout, "USELESS=0", 0);
       trim_execs++;
 
       if (stop_soon || fault == FAULT_ERROR) goto abort_trimming;
@@ -4726,7 +5046,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   write_to_testcase(out_buf, len);
 
-  fault = run_target(argv, exec_tmout);
+  fault = run_target(argv, exec_tmout, "USELESS=0", 0);
 
   if (stop_soon) return 1;
 
@@ -6902,7 +7222,7 @@ static void sync_fuzzers(char** argv) {
 
         write_to_testcase(mem, st.st_size);
 
-        fault = run_target(argv, exec_tmout);
+        fault = run_target(argv, exec_tmout, "USELESS=0", 0);
 
         if (stop_soon) return;
 
@@ -7373,6 +7693,15 @@ EXP_ST void setup_dirs_fds(void) {
                      "pending_total, pending_favs, map_size, unique_crashes, "
                      "unique_hangs, max_depth, execs_per_sec\n");
                      /* ignore errors */
+
+  /* PacFuzz: Log file. */
+  tmp = alloc_printf("%s/pacfuzz.log", out_dir);
+  fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  log_file = fdopen(fd, "w");
+  if (!log_file) PFATAL("fdopen() failed");
 
 }
 
@@ -8253,12 +8582,32 @@ int main(int argc, char** argv) {
 
     if (stop_soon) break;
 
-    if (first_unhandled) { // This is set only when a new item was added.
-      queue_cur = first_unhandled;
-      first_unhandled = NULL;
-    } else { // Proceed to the next unhandled item in the queue.
-      while (queue_cur && queue_cur->handled_in_cycle)
-        queue_cur = queue_cur->next;
+    // PacFuzz: We will keep DAFL queue handling for later use.
+    if (false) {
+      if (first_unhandled) { // This is set only when a new item was added.
+        queue_cur = first_unhandled;
+        first_unhandled = NULL;
+      } else { // Proceed to the next unhandled item in the queue.
+        while (queue_cur && queue_cur->handled_in_cycle)
+          queue_cur = queue_cur->next;
+      }
+    }
+    // PacFuzz: We will choose the next item to fuzz based on pareto frontier.
+    else {
+      queue_cur = NULL;
+      // If pareto frontier is empty and recycled queue is empty then error.
+      if (pareto_size == 0 && recycled_size == 0) {
+        LOGF("[PacFuzz] [err] [seed select] pareto and recycled queue are empty.\n");
+      }
+      // If recycled queue is not empty then recycle the queue.
+      // then re-calculate the pareto frontier.
+      if (pareto_size == 0 && recycled_size > 0) {
+        get_pareto_from_recycled();
+      }
+
+      // If pareto frontier is not empty then choose the first item.
+      // Pop it and set it as the current item.
+      queue_cur = pop_pareto_frontier();
     }
   }
 
@@ -8295,6 +8644,7 @@ stop_fuzzing:
   }
 
   fclose(plot_file);
+  fclose(log_file);
   destroy_queue();
   destroy_extras();
   ck_free(target_path);

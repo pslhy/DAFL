@@ -96,10 +96,14 @@ void initDFGNodeMap(char* dfg_file) {
   std::ifstream stream(dfg_file);
 
   while (std::getline(stream, line)) {
+    // PACFuzz: DFG file format - <dafl_score> <path_score> <file_name>:<line_no>
+    // PACFuzz: We discard the path score for this version.
     std::size_t space_idx = line.find(" ");
-    std::string score_str = line.substr(0, space_idx);
-    std::string targ_line = line.substr(space_idx + 1, std::string::npos);
-    int score = stoi(score_str);
+    std::string dafl_score_str = line.substr(0, space_idx);
+    std::size_t space_idx_2 = line.find(" ", space_idx + 1);
+    std::string path_score_str = line.substr(space_idx + 1, space_idx2);
+    std::string targ_line = line.substr(space_idx_2 + 1, std::string::npos);
+    int dafl_score = stoi(dafl_score_str);
     dfg_node_map[targ_line] = std::make_pair(idx++, (unsigned int) score);
     if (idx >= DFG_MAP_SIZE) {
       std::cout << "Input DFG is too large (check DFG_MAP_SIZE)" << std::endl;
@@ -228,8 +232,10 @@ bool AFLCoverage::runOnModule(Module &M) {
             if (dfg_node_map.count(targ_str) > 0) {
               is_dfg_node = true;
               auto node_info = dfg_node_map[targ_str];
+              auto path_info = dfg_path_map[targ_str];
               node_idx = node_info.first;
               node_score = node_info.second;
+              path_score = path_info;
               inst_dfg_nodes++;
               break;
             }
