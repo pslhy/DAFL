@@ -42,6 +42,7 @@
 #include "debug.h"
 #include "alloc-inl.h"
 #include "hash.h"
+#include "uthash.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -156,8 +157,6 @@ EXP_ST u32* dfg_bits;                 /* SHM with DFG coverage bitmap     */
 
 EXP_ST u32 dfg_target_idx;            /* Index of the target DFG node     */
 EXP_ST u64 dfg_cnt[DFG_MAP_SIZE];     /* DFG node hit count               */
-EXP_ST u8  dfg_hash[4294967296];      /* DFG node hash table              */
-EXP_ST u8  memval_hash[4294967296];   /* Memory valuation hash table      */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
@@ -326,6 +325,15 @@ static u64 total_div_score = 0;       /* Sum of diversity scores          */
 static u64 avg_div_score = 0;         /* Average of diversity scores      */
 static u32 no_dfg_schedule = 0;       /* No DFG-based seed scheduling     */
 static u32 t_x = 0;                   /* To test AFLGo's scheduling       */
+
+struct hash_entry {
+    u32 key;                          /* Hash key                         */
+    u8 is_used;                       /* Is this entry used?              */
+    UT_hash_handle hh;                /* Hash handler                     */
+};
+
+static HashEntry *dfg_hash = NULL;    /* Hash map for DFG usage           */
+static HashEntry *memval_hash = NULL; /* Hash map for memory values       */
 
 static u8* (*post_handler)(u8* buf, u32* len);
 
@@ -833,6 +841,34 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
   ck_free(fn);
 
+}
+
+static void add_memval_hash(u32 hashkey) {
+    HashEntry *entry;
+    HASH_FIND_INT(memval_hash, &hashkey, entry);  // 키가 이미 있는지 확인
+
+    if (entry == NULL) {  // 키가 없으면 새로 추가
+        entry = (HashEntry*)malloc(sizeof(HashEntry));
+        entry->key = hashkey;
+        entry->is_used = 1;
+        HASH_ADD_INT(memval_hash, key, entry);  // 해시맵에 추가
+    }
+}
+
+// 키가 사용되었는지 확인
+int is_memval_used(u32 hashkey) {
+    HashEntry *entry;
+    HASH_FIND_INT(memval_hash, &hashkey, entry);  // 키 조회
+    return (entry != NULL) ? entry->is_used : 0;
+}
+
+// 해시맵 해제
+void free_memval_hash() {
+    HashEntry *entry, *tmp;
+    HASH_ITER(hh, memval_hash, entry, tmp) {
+        HASH_DEL(memval_hash, entry);
+        free(entry);
+    }
 }
 
 static u8 dominates(struct queue_entry* q1, struct queue_entry* q2) {
@@ -3111,14 +3147,15 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
 
   // Check if the hash is already in the hash table
 
-  if (memval_hash[hash] != 0) {
+  if (is_memval_used(hash)) {
     LOGF("[PacFuzz] [run_valuation] [hash %u] [already-exist] [time %llu]\n", hash, get_cur_time() - start_time);
     remove(tmpfile);
     ck_free(tmpfile);
     return 0;
   }
 
-  memval_hash[hash] = 1;
+  add_memval_hash(hash);
+
   *valuation_file = tmpfile;
   *val_hash = hash;
   return 1;
@@ -8661,6 +8698,7 @@ stop_fuzzing:
   destroy_extras();
   ck_free(target_path);
   ck_free(sync_id);
+  free_memval_hash();
 
   alloc_report();
 
