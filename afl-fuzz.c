@@ -3053,7 +3053,7 @@ static void save_valuation(u32 val_hash, u8 *valuation_file) {
   u8 *target_file = alloc_printf("memory/%s/id:%06llu", crashed ? "neg" : "pos",
                                   crashed ? total_saved_crashes : total_saved_positives);
   LOGF("[PacFuzz] [mem] [%s] [seed %d] [entry %d] [id %llu] [hash %u] [time %llu] [file %s]\n", crashed == 1 ? "neg" : "pos", queue_cur ? queue_cur->entry_id : -1, queue_last ? queue_last->entry_id : -1,
-       crashed ? total_saved_crashes : total_saved_positives, hash, get_cur_time() - start_time, target_file);
+       crashed ? total_saved_crashes : total_saved_positives, val_hash, get_cur_time() - start_time, target_file);
   u8 *target_file_full = alloc_printf("%s/%s", out_dir, target_file);
   rename(valuation_file, target_file_full);
   ck_free(valuation_file);
