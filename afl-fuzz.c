@@ -2718,7 +2718,7 @@ static u8 run_target(char** argv, u32 timeout, char* env_opt, u8 force_dumbmode)
 
   /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
 
-  if (dumb_mode == 1 || no_forkserver) {
+  if (force_dumb_mode == 1 || dumb_mode == 1 || no_forkserver) {
 
     if (waitpid(child_pid, &status, 0) <= 0) PFATAL("waitpid() failed");
 
@@ -2784,7 +2784,7 @@ static u8 run_target(char** argv, u32 timeout, char* env_opt, u8 force_dumbmode)
     return FAULT_CRASH;
   }
 
-  if ((dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
+  if ((force_dumb_mode == 1  || dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
     return FAULT_ERROR;
 
   /* It makes sense to account for the slowest units only if the testcase was run
@@ -3118,7 +3118,7 @@ static void save_valuation(u32 val_hash, u8 *valuation_file) {
   u8 crashed = is_crashed(valuation_file);
   u8 *target_file = alloc_printf("memory/%s/id:%06llu", crashed ? "neg" : "pos",
                                   crashed ? total_saved_crashes : total_saved_positives);
-  LOGF("[PacFuzz] [mem] [%s] [seed %d] [entry %d] [id %llu] [hash %u] [time %llu] [file %s]\n", crashed == 1 ? "neg" : "pos", queue_cur ? queue_cur->entry_id : -1, queue_last ? queue_last->entry_id : -1,
+  LOGF("[PacFuzz] [save_valuation] [%s] [seed %d] [entry %d] [id %llu] [hash %u] [time %llu] [file %s]\n", crashed == 1 ? "neg" : "pos", queue_cur ? queue_cur->entry_id : -1, queue_last ? queue_last->entry_id : -1,
        crashed ? total_saved_crashes : total_saved_positives, val_hash, get_cur_time() - start_time, target_file);
   u8 *target_file_full = alloc_printf("%s/%s", out_dir, target_file);
   rename(valuation_file, target_file_full);
@@ -3167,6 +3167,8 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
   fault_tmp = run_target(argv, 10000, tmpfile_env, 1);
   argv[0] = tmp_argv1;
   ck_free(tmpfile_env);
+
+  LOGF("[PacFuzz] [run_valuation] [run-completed] [fault %d] [time %llu]\n", fault_tmp, get_cur_time() - start_time);
 
   if (fault_tmp == FAULT_TMOUT || access(tmpfile, F_OK) != 0) {
     LOGF("[PacFuzz] [run_valuation] [timeout %d] [no-file %d] [time %llu]\n", fault_tmp == FAULT_TMOUT, access(tmpfile, F_OK) != 0, get_cur_time() - start_time);
