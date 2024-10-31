@@ -384,6 +384,8 @@ enum {
   /* 05 */ FAULT_NOBITS
 };
 
+static u8* fault_str[6] = { "NONE", "TMOUT", "CRASH", "ERROR", "NOINST", "NOBITS" };
+
 /* Emit a log message. */
 
 #define LOGF(x...) do { \
@@ -3168,7 +3170,7 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
   argv[0] = tmp_argv1;
   ck_free(tmpfile_env);
 
-  LOGF("[PacFuzz] [run_valuation] [run-completed] [fault %d] [time %llu]\n", fault_tmp, get_cur_time() - start_time);
+  LOGF("[PacFuzz] [run_valuation] [run-completed] [fault %s] [time %llu]\n", fault_str[fault_tmp], get_cur_time() - start_time);
 
   if (fault_tmp == FAULT_TMOUT || access(tmpfile, F_OK) != 0) {
     LOGF("[PacFuzz] [run_valuation] [timeout %d] [no-file %d] [time %llu]\n", fault_tmp == FAULT_TMOUT, access(tmpfile, F_OK) != 0, get_cur_time() - start_time);
