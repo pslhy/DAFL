@@ -893,8 +893,8 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
 }
 
 static void get_pareto_from_recycled() {
-  struct queue_entry* empty_queue[MAX_PARETO_FRONT];
-  pareto_size = 0; pareto_frontier = empty_queue;
+  pareto_size = 0;
+  memset(pareto_frontier, 0, MAX_PARETO_FRONT * sizeof(struct queue_entry*));
   for (int i = 0; i < recycled_size; i++) {
     update_pareto_frontier(recycled_queue[i]);
   }
@@ -2923,10 +2923,10 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   avg_prox_score = total_prox_score / queued_paths;
   if (min_prox_score > q->prox_score) min_prox_score = q->prox_score;
   if (max_prox_score < q->prox_score) max_prox_score = q->prox_score;
-  total_diverse_score += q->diverse_score;
-  avg_diverse_score = total_diverse_score / queued_paths;
-  if (min_diverse_score > q->diverse_score) min_diverse_score = q->diverse_score;
-  if (max_diverse_score < q->diverse_score) max_diverse_score = q->diverse_score;
+  total_div_score += q->diverse_score;
+  avg_div_score = total_div_score / queued_paths;
+  if (min_div_score > q->diverse_score) min_div_score = q->diverse_score;
+  if (max_div_score < q->diverse_score) max_div_score = q->diverse_score;
 
   update_bitmap_score(q);
 
@@ -3624,7 +3624,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
   }
 
-  get_valuation(argv, use_mem, q->len);
+  get_valuation(argv, mem, len);
 
   switch (fault) {
 
@@ -8596,7 +8596,7 @@ int main(int argc, char** argv) {
     if (stop_soon) break;
 
     // PacFuzz: We will keep DAFL queue handling for later use.
-    if (false) {
+    if (0) {
       if (first_unhandled) { // This is set only when a new item was added.
         queue_cur = first_unhandled;
         first_unhandled = NULL;
