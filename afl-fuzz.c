@@ -894,7 +894,6 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
 
 static void get_pareto_from_recycled() {
   pareto_size = 0;
-  memset(pareto_frontier, 0, MAX_PARETO_FRONT * sizeof(struct queue_entry*));
   for (int i = 0; i < recycled_size; i++) {
     update_pareto_frontier(recycled_queue[i]);
   }
