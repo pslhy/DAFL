@@ -1303,8 +1303,8 @@ static void update_dfg_node_cnt(void) {
         u64 affected_value = pow(0.9, dfg_cnt[i]);
         while (q) {
           total_div_score -= q->diverse_score;
-          q->diverse_score -= reduce_value;
-          q = q->next_affected;
+          q->diverse_score -= affected_value;
+          q = q->affected_next;
         }
 
         dfg_cnt[i] += 1;
@@ -1313,11 +1313,11 @@ static void update_dfg_node_cnt(void) {
         q = affected_entries[i];
         affected_value = pow(0.9, dfg_cnt[i]);
         while (q) {
-          total_div_score += entry->diverse_score;
           q->diverse_score += affected_value;
-          q = q->next_affected;
-          if (entry->diverse_score > max_div_score) { max_div_score = entry->diverse_score; }
-          if (entry->diverse_score < min_div_score) { min_div_score = entry->diverse_score; }
+          total_div_score += q->diverse_score;
+          if (q->diverse_score > max_div_score) { max_div_score = q->diverse_score; }
+          if (q->diverse_score < min_div_score) { min_div_score = q->diverse_score; }
+          q = q->affected_next;
         }
       }
     }
@@ -1339,7 +1339,7 @@ static u64 compute_diversity_score(struct queue_entry* q) {
       if (affected_entries[i] == NULL) {
         affected_entries[i] = q;
       } else {
-        q->next_affected = affected_entries[i];
+        q->affected_next = affected_entries[i];
         affected_entries[i] = q;
       }
     }
@@ -1349,11 +1349,11 @@ static u64 compute_diversity_score(struct queue_entry* q) {
 }
 
 /* PacFuzz: Save every testcase to all_entries 
-   Should always be sorted by proc_score */
+   Should always be sorted by prox_score */
 
 static void add_to_all_entries(struct queue_entry* entry) {
 
-  // No zero proc_score entry
+  // No zero prox_score entry
   if (entry->prox_score == 0) {
     entry->prox_score = recompute_proximity_score(entry);
   }
@@ -1368,7 +1368,7 @@ static void add_to_all_entries(struct queue_entry* entry) {
     struct queue_entry* q = all_entries;
 
     while(q->snext != NULL) {
-      if (q->proc_score <= entry->proc_score) {
+      if (q->prox_score <= entry->prox_score) {
         if (q->sprev == NULL) {
           all_entries = entry;
         } else {
@@ -1416,7 +1416,7 @@ static void find_pareto_frontier() {
   struct queue_entry* q = all_entries;
   
   while(q != NULL) {
-    if (q.diverse_score > max_diverse_score) {
+    if (q->diverse_score > max_diverse_score) {
       if (frontier == NULL) {
         frontier = q;
       } else {
