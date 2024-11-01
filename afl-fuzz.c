@@ -3392,7 +3392,7 @@ static void perform_dry_run(char** argv) {
         break;
 
     }
-    
+
     ck_free(use_mem);
 
     if (q->var_behavior) WARNF("Instrumentation output varies across runs.");
@@ -7751,6 +7751,12 @@ EXP_ST void setup_dirs_fds(void) {
   /* All recorded crashes. */
 
   tmp = alloc_printf("%s/crashes", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
+  ck_free(tmp);
+
+  /* All recorded normals */
+
+  tmp = alloc_printf("%s/normals", out_dir);
   if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp);
   ck_free(tmp);
 
