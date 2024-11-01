@@ -1000,6 +1000,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u64 
   if (q->depth > max_depth) max_depth = q->depth;
 
   sorted_insert_to_queue(q);
+  add_to_all_entries(q);
 
   queue_last = q;
   queued_paths++;
@@ -1320,26 +1321,26 @@ static void recompute_diversity_score(struct queue_entry* entry) {
   if (entry->diverse_score < min_div_score) { min_div_score = entry->diverse_score; }
 }
 
+static void add_to_all_entries(struct queue_entry* entry) {
+  LOGF("[PacFuzz] [all_entries] save to all_entries %d\n", new_entry->entry_id);
+  if (all_entries == NULL) {
+    all_entries = entry;
+  } else {
+    struct queue_entry* q = all_entries;
+    while(q->next != NULL) {
+      q = q->next;
+    }
+    q->next = entry;
+  }
+}
+
 static void update_pareto_frontier (struct queue_entry* new_entry) {
   int new_frontier_size = 0;
   struct queue_entry* temp_frontier[MAX_PARETO_FRONT];
   u8 is_dominated = 0;
 
-  if(new_entry->entry_id >= queued_paths) {
-    LOGF("[PacFuzz] [pareto] save to all_entries %d\n", new_entry->entry_id);
-    if (all_entries == NULL) {
-      all_entries = new_entry;
-    } else {
-      struct queue_entry* q = all_entries;
-      while(q->next != NULL) {
-        q = q->next;
-      }
-      q->next = new_entry;
-    }
-  }
-
   if (all_entries == NULL) {
-    WARNF("[PacFuzz] [pareto] all_entries is NULL\n");
+    WARNF("[PacFuzz] [pareto] all_entries is NULL");
     return;
   }
 
