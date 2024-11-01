@@ -2694,7 +2694,7 @@ static u8 run_target(char** argv, u32 timeout, char* env_opt, u8 force_dumbmode)
   static u32 prev_timed_out = 0;
   static u64 exec_ms = 0;
 
-  LOGF("[PacFuzz] [run_target] timeout: %u, env_opt: %s, force_dumbmode: %d", timeout, env_opt, force_dumbmode);
+  LOGF("[PacFuzz] [run_target] timeout: %u, env_opt: %s, force_dumbmode: %d\n", timeout, env_opt, force_dumbmode);
 
   int status = 0;
   u32 tb4;
@@ -2912,6 +2912,8 @@ static u8 run_target(char** argv, u32 timeout, char* env_opt, u8 force_dumbmode)
 static void write_to_testcase(void* mem, u32 len) {
 
   s32 fd = out_fd;
+
+  LOGF("[PacFuzz] [write_to_testcase] len: %u\n", len);
 
   if (out_file) {
 
@@ -5234,7 +5236,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   u8 fault;
 
-  LOGF("[PacFuzz] [common_fuzz_stuff] entering\n");
+  LOGF("[PacFuzz] [common_fuzz_stuff] len: %d\n", len);
 
   if (post_handler) {
 
