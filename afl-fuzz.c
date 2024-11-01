@@ -282,6 +282,9 @@ struct queue_entry {
   u32* dfg_bits;                      /* DFG coverage bitmap              */
 
   struct queue_entry *next;           /* Next element, if any             */
+  struct queue_entry *snext;          /* Next element (sorted), if any    */
+  struct queue_entry *sprev;          /* Prev element (sorted), if any    */
+  struct queue_entry *affected_next;  /* Next element in affected list    */
 
 };
 
@@ -298,7 +301,11 @@ static struct queue_entry*
   top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
 
 static struct queue_entry*
+  affected_entries[DFG_MAP_SIZE];     /* Entries affected by DFG nodes    */
+static struct queue_entry*
   all_entries;                        /* Keep track of all entries        */
+static struct queue_entry*
+  frontier;                           /* Frontier for seed select        */
 static struct queue_entry*
   pareto_frontier[MAX_PARETO_FRONT];  /* Pareto frontier for seed select  */
 static struct queue_entry*
@@ -848,25 +855,6 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 }
 
-/* PacFuzz: Save every testcase to all_entries */
-
-static void add_to_all_entries(struct queue_entry* entry) {
-  LOGF("[PacFuzz] [all_entries] save to all_entries %d\n", entry->entry_id);
-  if (all_entries == NULL) {
-    all_entries = entry;
-  } else {
-    if (all_entries->entry_id >= entry->entry_id) return;
-
-    struct queue_entry* q = all_entries;
-
-    while(q->next != NULL) {
-      q = q->next;
-    }
-    
-    q->next = entry;
-  }
-}
-
 /* PacFuzz: Get target node id and score */
 
 static void init_dfg() {
@@ -936,20 +924,12 @@ static u8 dominates(struct queue_entry* q1, struct queue_entry* q2) {
 }
 
 
-static void add_recycled_queue(struct queue_entry* entry) {
-  recycled_queue[recycled_size++] = entry;
-}
-
 static struct queue_entry* pop_pareto_frontier() {
   if (pareto_size == 0) {
     return NULL;
   }
 
-  struct queue_entry* entry = pareto_frontier[0];
-  pareto_frontier[0] = pareto_frontier[pareto_size - 1];
-  pareto_size--;
-
-  add_recycled_queue(entry);
+  struct queue_entry* entry = frontier;
 
   return entry;
 }
@@ -1300,12 +1280,45 @@ static u64 compute_proximity_score(void) {
   return prox_score;
 }
 
+static u64 recompute_proximity_score(struct queue_entry* q) {
+
+  u64 prox_score = 0;
+  u32 i = DFG_MAP_SIZE;
+
+  while (i--) {
+    prox_score += q->dfg_bits[i];
+  }
+
+  return prox_score;
+}
+
+
 static void update_dfg_node_cnt(void) {
     u32 i = DFG_MAP_SIZE;
 
     while (i--) {
       if (dfg_bits[i] > 0) {
-        dfg_cnt[i]++;
+        // Decrease the score of the affected entries
+        struct queue_entry* q = affected_entries[i];
+        u64 affected_value = pow(0.9, dfg_cnt[i]);
+        while (q) {
+          total_div_score -= q->diverse_score;
+          q->diverse_score -= reduce_value;
+          q = q->next_affected;
+        }
+
+        dfg_cnt[i] += 1;
+
+        // Recompute and update the affected entries
+        q = affected_entries[i];
+        affected_value = pow(0.9, dfg_cnt[i]);
+        while (q) {
+          total_div_score += entry->diverse_score;
+          q->diverse_score += affected_value;
+          q = q->next_affected;
+          if (entry->diverse_score > max_div_score) { max_div_score = entry->diverse_score; }
+          if (entry->diverse_score < min_div_score) { min_div_score = entry->diverse_score; }
+        }
       }
     }
 }
@@ -1321,23 +1334,60 @@ static u64 compute_diversity_score(struct queue_entry* q) {
   while (i--) {
     if (q->dfg_bits[i] > 0) {
       div_score += q->dfg_bits[i] * pow(0.9, dfg_cnt[i]);
+      
+      // Add the node to the affected_entries
+      if (affected_entries[i] == NULL) {
+        affected_entries[i] = q;
+      } else {
+        q->next_affected = affected_entries[i];
+        affected_entries[i] = q;
+      }
     }
   }
 
   return div_score;
 }
 
-static void recompute_diversity_score(struct queue_entry* entry) {
-  total_div_score -= entry->diverse_score;
+/* PacFuzz: Save every testcase to all_entries 
+   Should always be sorted by proc_score */
 
-  entry->diverse_score = 0;
-  entry->diverse_score = compute_diversity_score(entry);
-  total_div_score += entry->diverse_score;
-  avg_div_score = total_div_score / queued_paths;
+static void add_to_all_entries(struct queue_entry* entry) {
 
-  if (entry->diverse_score > max_div_score) { max_div_score = entry->diverse_score; }
-  if (entry->diverse_score < min_div_score) { min_div_score = entry->diverse_score; }
+  // No zero proc_score entry
+  if (entry->prox_score == 0) {
+    entry->prox_score = recompute_proximity_score(entry);
+  }
+
+  if (all_entries == NULL) {
+    all_entries = entry;
+  } else {
+    if (all_entries->entry_id >= entry->entry_id) {
+      LOGF("[PacFuzz] [all_entries] Duplicate entry : %d\n", entry->entry_id);
+    }
+
+    struct queue_entry* q = all_entries;
+
+    while(q->snext != NULL) {
+      if (q->proc_score <= entry->proc_score) {
+        if (q->sprev == NULL) {
+          all_entries = entry;
+        } else {
+          q->sprev->snext = entry;
+          entry->sprev = q->sprev;
+        }
+
+        entry->snext = q;
+        q->sprev = entry;
+        return; 
+      }
+    }
+
+    q->snext = entry;
+    entry->sprev = q;
+    entry->snext = NULL;
+  }
 }
+
 
 static struct queue_entry* copy_queue_entry(struct queue_entry* entry) {
   struct queue_entry* new_entry = ck_alloc(sizeof(struct queue_entry));
@@ -1358,60 +1408,30 @@ static struct queue_entry* copy_queue_entry(struct queue_entry* entry) {
   return new_entry;
 }
 
-static void update_pareto_frontier (struct queue_entry* new_entry) {
+static void find_pareto_frontier() {
   int new_frontier_size = 0;
-  struct queue_entry* temp_frontier[MAX_PARETO_FRONT];
-  u8 is_dominated = 0;
-
-  if (all_entries == NULL) {
-    WARNF("[PacFuzz] [pareto] all_entries is NULL");
-    return;
-  }
-
-  // Recalculate diversity score and update the pareto frontier from all_entries
+  frontier = NULL;
+  u64 max_diverse_score = 0;
+  
   struct queue_entry* q = all_entries;
-
-  LOGF("[PacFuzz] [pareto] start calculate pareto frontier\n");
-
+  
   while(q != NULL) {
-    recompute_diversity_score(q);
-    LOGF("[PacFuzz] [pareto] error checker %llu\n", q->entry_id);
-    if (!dominates(new_entry, q)) {
-      struct queue_entry* temp_entry = q;
-
-      if(q->next != NULL) {
-        temp_entry = copy_queue_entry(q);
-        temp_entry->next = NULL; // Cut next target just for test
-      } 
-
-      temp_frontier[new_frontier_size++] = temp_entry;
+    if (q.diverse_score > max_diverse_score) {
+      if (frontier == NULL) {
+        frontier = q;
+      } else {
+        frontier->next = q;
+        frontier = q;
+      }
+      
+      new_frontier_size++;
     }
-    if (dominates(q, new_entry)) {
-      is_dominated = 1;
-    }
-    q = q->next;
-    if (q == NULL || (q->next != NULL && q->next == q)) break;
-  }
-  
-  if (!is_dominated) {
-    temp_frontier[new_frontier_size++] = new_entry;
-  }
-  
-  for (int i = 0; i < new_frontier_size; i++) {
-    pareto_frontier[i] = temp_frontier[i];
+    
+    q = q->snext;
   }
 
   pareto_size = new_frontier_size;
-
   LOGF("[PacFuzz] [pareto] Pareto frontier updated with %d entries\n", pareto_size);
-}
-
-static void get_pareto_from_recycled() {
-  pareto_size = 0;
-  for (int i = 0; i < recycled_size; i++) {
-    update_pareto_frontier(recycled_queue[i]);
-  }
-  recycled_size = 0;
 }
 
 /* Destructively simplify trace by eliminating hit count information
@@ -3057,7 +3077,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   q->cal_failed  = 0;
 
   add_to_all_entries(q);
-  update_pareto_frontier(q);
+  find_pareto_frontier();
 
   total_bitmap_size += q->bitmap_size;
   total_bitmap_entries++;
@@ -8766,13 +8786,12 @@ int main(int argc, char** argv) {
       queue_cur = NULL;
       // If pareto frontier is empty and recycled queue is empty then error.
       if (pareto_size == 0 && recycled_size == 0) {
-        LOGF("[PacFuzz] [err] [seed select] pareto and recycled queue are empty.\n");
+        WARNF("[PacFuzz] [err] [seed select] pareto and recycled queue are empty.");
       }
-      // If recycled queue is not empty then recycle the queue.
-      // then re-calculate the pareto frontier.
+      // If recycled queue is not empty then re-calculate the pareto frontier.
       if (pareto_size == 0 && recycled_size > 0) {
         LOGF("[PacFuzz] [seed select] queue recycled.\n");
-        get_pareto_from_recycled();
+        find_pareto_frontier();
       }
 
       // If pareto frontier is not empty then choose the first item.
