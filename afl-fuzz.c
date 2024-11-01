@@ -958,6 +958,8 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
     q_probe = queue;
     while (q_probe) {
 
+      LOGF("[PacFuzz] [sorted_insert_to_queue] q_probe: %p, q_probe->diverse_score: %llu, q->diverse_score: %llu\n", q_probe, q_probe->diverse_score, q->diverse_score);
+
       if ((i % 100 == 0) && (i / 100 < 1024)) {
         shortcut_per_100[(i / 100)] = q_probe;
       }
@@ -985,6 +987,8 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 /* Append new test case to the queue. */
 
 static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u64 diverse_score) {
+
+  LOGF("[PacFuzz] [add_to_queue] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu, diverse_score: %llu\n", fname, len, passed_det, prox_score, diverse_score);
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
