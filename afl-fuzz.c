@@ -935,73 +935,6 @@ static struct queue_entry* pop_pareto_frontier() {
   return entry;
 }
 
-static void recalculate_diversity_score(struct queue_entry* entry) {
-  total_div_score -= entry->diverse_score;
-  entry->diverse_score = 0;
-  entry->diverse_score = compute_diversity_score(entry);
-  total_div_score += entry->diverse_score;
-  avg_div_score = total_div_score / queued_paths;
-  if (entry->diverse_score > max_div_score) { max_div_score = entry->diverse_score; }
-  if (entry->diverse_score < min_div_score) { min_div_score = entry->diverse_score; }
-}
-
-static void update_pareto_frontier (struct queue_entry* new_entry) {
-  int new_frontier_size = 0;
-  struct queue_entry* temp_frontier[MAX_PARETO_FRONT];
-  u8 is_dominated = 0;
-
-  if(new_entry->entry_id >= queued_paths) {
-    LOGF("[PacFuzz] [pareto] save to all_entries %d\n", new_entry->entry_id);
-    if (all_entries == NULL) {
-      all_entries = new_entry;
-    } else {
-      struct queue_entry* q = all_entries;
-      while(q->next != NULL) {
-        q = q->next;
-      }
-      q->next = new_entry;
-    }
-  }
-
-  if (all_entries == NULL) {
-    WARNF("[PacFuzz] [pareto] all_entries is NULL\n");
-    return;
-  }
-
-  // Recalculate diversity score and update the pareto frontier from all_entries
-  struct queue_entry* q = all_entries;
-  while(q != NULL) {
-    recalculate_diversity_score(q);
-    if (!dominates(new_entry, q)) {
-      temp_frontier[new_frontier_size++] = q;
-      temp_frontier[new_frontier_size++]->next = NULL; // Cut next target just for test
-    }
-    if (dominates(q, new_entry)) {
-      is_dominated = 1;
-    }
-    q = q->next;
-  }
-  
-  if (!is_dominated) {
-    temp_frontier[new_frontier_size++] = new_entry;
-  }
-  
-  for (int i = 0; i < new_frontier_size; i++) {
-    pareto_frontier[i] = temp_frontier[i];
-  }
-
-  pareto_size = new_frontier_size;
-
-  LOGF("[PacFuzz] [pareto] Pareto frontier updated with %d entries\n", pareto_size);
-}
-
-static void get_pareto_from_recycled() {
-  pareto_size = 0;
-  for (int i = 0; i < recycled_size; i++) {
-    update_pareto_frontier(recycled_queue[i]);
-  }
-  recycled_size = 0;
-}
 
 /* Insert a test case to the queue, preserving the sorted order based on the
  * proximity score. Updates global variables 'queue', 'shortcut_per_100', and
@@ -1368,11 +1301,81 @@ static u64 compute_diversity_score(struct queue_entry* q) {
 
   while (i--) {
     if (q->dfg_bits[i] > 0) {
-      div_score += q->dfg_bits[i] * pow(0.9, q->dfg_cnt[i]);
+      div_score += q->dfg_bits[i] * pow(0.9, dfg_cnt[i]);
     }
   }
 
   return div_score;
+}
+
+static void recompute_diversity_score(struct queue_entry* entry) {
+  total_div_score -= entry->diverse_score;
+
+  entry->diverse_score = 0;
+  entry->diverse_score = compute_diversity_score(entry);
+  total_div_score += entry->diverse_score;
+  avg_div_score = total_div_score / queued_paths;
+
+  if (entry->diverse_score > max_div_score) { max_div_score = entry->diverse_score; }
+  if (entry->diverse_score < min_div_score) { min_div_score = entry->diverse_score; }
+}
+
+static void update_pareto_frontier (struct queue_entry* new_entry) {
+  int new_frontier_size = 0;
+  struct queue_entry* temp_frontier[MAX_PARETO_FRONT];
+  u8 is_dominated = 0;
+
+  if(new_entry->entry_id >= queued_paths) {
+    LOGF("[PacFuzz] [pareto] save to all_entries %d\n", new_entry->entry_id);
+    if (all_entries == NULL) {
+      all_entries = new_entry;
+    } else {
+      struct queue_entry* q = all_entries;
+      while(q->next != NULL) {
+        q = q->next;
+      }
+      q->next = new_entry;
+    }
+  }
+
+  if (all_entries == NULL) {
+    WARNF("[PacFuzz] [pareto] all_entries is NULL\n");
+    return;
+  }
+
+  // Recalculate diversity score and update the pareto frontier from all_entries
+  struct queue_entry* q = all_entries;
+  while(q != NULL) {
+    recalculate_diversity_score(q);
+    if (!dominates(new_entry, q)) {
+      temp_frontier[new_frontier_size++] = q;
+      temp_frontier[new_frontier_size++]->next = NULL; // Cut next target just for test
+    }
+    if (dominates(q, new_entry)) {
+      is_dominated = 1;
+    }
+    q = q->next;
+  }
+  
+  if (!is_dominated) {
+    temp_frontier[new_frontier_size++] = new_entry;
+  }
+  
+  for (int i = 0; i < new_frontier_size; i++) {
+    pareto_frontier[i] = temp_frontier[i];
+  }
+
+  pareto_size = new_frontier_size;
+
+  LOGF("[PacFuzz] [pareto] Pareto frontier updated with %d entries\n", pareto_size);
+}
+
+static void get_pareto_from_recycled() {
+  pareto_size = 0;
+  for (int i = 0; i < recycled_size; i++) {
+    update_pareto_frontier(recycled_queue[i]);
+  }
+  recycled_size = 0;
 }
 
 /* Destructively simplify trace by eliminating hit count information
