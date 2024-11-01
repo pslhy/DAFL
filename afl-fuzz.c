@@ -8694,6 +8694,7 @@ int main(int argc, char** argv) {
       // If recycled queue is not empty then recycle the queue.
       // then re-calculate the pareto frontier.
       if (pareto_size == 0 && recycled_size > 0) {
+        LOGF("[PacFuzz] [seed select] queue recycled.\n");
         get_pareto_from_recycled();
       }
 
