@@ -1348,6 +1348,12 @@ static struct queue_entry* copy_queue_entry(struct queue_entry* entry) {
   new_entry->prox_score = entry->prox_score;
   new_entry->diverse_score = entry->diverse_score;
   new_entry->entry_id = entry->entry_id;
+  new_entry->next = entry->next;
+  new_entry->handled_in_cycle = entry->handled_in_cycle;
+  new_entry->var_behavior = entry->var_behavior;
+  new_entry->fs_redundant = entry->fs_redundant;
+  new_entry->trace_mini = entry->trace_mini;
+  new_entry->dfg_bits = entry->dfg_bits;
 
   return new_entry;
 }
@@ -1364,11 +1370,14 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
 
   // Recalculate diversity score and update the pareto frontier from all_entries
   struct queue_entry* q = all_entries;
+
+  LOGF("[PacFuzz] [pareto] start calculate pareto frontier\n");
+
   while(q != NULL) {
     recompute_diversity_score(q);
     if (!dominates(new_entry, q)) {
       struct queue_entry* temp_entry = q;
-      
+
       if(q->next != NULL) {
         temp_entry = copy_queue_entry(q);
         temp_entry->next = NULL; // Cut next target just for test
