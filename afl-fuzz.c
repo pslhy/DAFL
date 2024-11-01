@@ -965,6 +965,7 @@ static void get_pareto_from_recycled() {
   for (int i = 0; i < recycled_size; i++) {
     update_pareto_frontier(recycled_queue[i]);
   }
+  recycled_size = 0;
 }
 
 /* Insert a test case to the queue, preserving the sorted order based on the
