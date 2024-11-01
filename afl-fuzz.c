@@ -1379,7 +1379,7 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
     if (!dominates(new_entry, q)) {
       struct queue_entry* temp_entry = q;
 
-      if(q->next != NULL) {
+      if(q->next != NULL || q->next != q) {
         temp_entry = copy_queue_entry(q);
         temp_entry->next = NULL; // Cut next target just for test
       } 
