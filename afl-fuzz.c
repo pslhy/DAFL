@@ -1346,7 +1346,7 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
   // Recalculate diversity score and update the pareto frontier from all_entries
   struct queue_entry* q = all_entries;
   while(q != NULL) {
-    recalculate_diversity_score(q);
+    recompute_diversity_score(q);
     if (!dominates(new_entry, q)) {
       temp_frontier[new_frontier_size++] = q;
       temp_frontier[new_frontier_size++]->next = NULL; // Cut next target just for test
