@@ -938,13 +938,12 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
   u8 is_dominated = 0;
   
   for (int i = 0; i < pareto_size; i++) {
-    if (dominates(pareto_frontier[i], new_entry)) {
-      is_dominated = 1;
-      break;
-    }
-    
     if (!dominates(new_entry, pareto_frontier[i])) {
       temp_frontier[new_frontier_size++] = pareto_frontier[i];
+    }
+
+    if (dominates(pareto_frontier[i], new_entry)) {
+      is_dominated = 1;
     }
   }
   
@@ -3206,9 +3205,6 @@ static void get_valuation(char** argv, u8* use_mem, u32 len) {
     if (success) {
       save_valuation(val_hash, valuation_file);
     }
-  }
-  else {
-    LOGF("[PacFuzz] [get_valuation] [target-not-covered] [time %llu]\n", get_cur_time() - start_time);
   }
 }
 
