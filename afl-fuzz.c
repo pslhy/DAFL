@@ -5248,6 +5248,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
   write_to_testcase(out_buf, len);
 
   fault = run_target(argv, exec_tmout, "USELESS=0", 0);
+  LOGF("[PacFuzz] [common_fuzz_stuff] fault: %s\n", fault_str[fault]);
 
   if (stop_soon) return 1;
 
