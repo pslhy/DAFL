@@ -848,6 +848,21 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 
 }
 
+/* PacFuzz: Save every testcase to all_entries */
+
+static void add_to_all_entries(struct queue_entry* entry) {
+  LOGF("[PacFuzz] [all_entries] save to all_entries %d\n", new_entry->entry_id);
+  if (all_entries == NULL) {
+    all_entries = entry;
+  } else {
+    struct queue_entry* q = all_entries;
+    while(q->next != NULL) {
+      q = q->next;
+    }
+    q->next = entry;
+  }
+}
+
 /* PacFuzz: Get target node id and score */
 
 static void init_dfg() {
@@ -1319,19 +1334,6 @@ static void recompute_diversity_score(struct queue_entry* entry) {
 
   if (entry->diverse_score > max_div_score) { max_div_score = entry->diverse_score; }
   if (entry->diverse_score < min_div_score) { min_div_score = entry->diverse_score; }
-}
-
-static void add_to_all_entries(struct queue_entry* entry) {
-  LOGF("[PacFuzz] [all_entries] save to all_entries %d\n", new_entry->entry_id);
-  if (all_entries == NULL) {
-    all_entries = entry;
-  } else {
-    struct queue_entry* q = all_entries;
-    while(q->next != NULL) {
-      q = q->next;
-    }
-    q->next = entry;
-  }
 }
 
 static void update_pareto_frontier (struct queue_entry* new_entry) {
