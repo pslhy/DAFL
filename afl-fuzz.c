@@ -2694,7 +2694,7 @@ static u8 run_target(char** argv, u32 timeout, char* env_opt, u8 force_dumbmode)
   static u32 prev_timed_out = 0;
   static u64 exec_ms = 0;
 
-  LOGF("[PacFuzz] [run_target] timeout: %u, env_opt: %s, force_dumbmode: %d\n", timeout, env_opt, force_dumbmode);
+  LOGF("[PacFuzz] [run_target] timeout: %u, env_opt: %s, force_dumbmode: %d, dumb_mode: %d, no_forkserver: %d\n", timeout, env_opt, force_dumbmode, dumb_mode, no_forkserver);
 
   int status = 0;
   u32 tb4;
