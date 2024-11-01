@@ -279,6 +279,7 @@ struct queue_entry {
 
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
+  u32* dfg_bits;                      /* DFG coverage bitmap              */
 
   struct queue_entry *next;           /* Next element, if any             */
 
@@ -296,6 +297,8 @@ static struct queue_entry*
 static struct queue_entry*
   top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
 
+static struct queue_entry*
+  all_entries;                        /* Keep track of all entries        */
 static struct queue_entry*
   pareto_frontier[MAX_PARETO_FRONT];  /* Pareto frontier for seed select  */
 static struct queue_entry*
@@ -932,19 +935,51 @@ static struct queue_entry* pop_pareto_frontier() {
   return entry;
 }
 
+static void recalculate_diversity_score(struct queue_entry* entry) {
+  total_div_score -= entry->diverse_score;
+  entry->diverse_score = 0;
+  entry->diverse_score = compute_diversity_score(entry);
+  total_div_score += entry->diverse_score;
+  avg_div_score = total_div_score / queued_paths;
+  if (entry->diverse_score > max_div_score) { max_div_score = entry->diverse_score; }
+  if (entry->diverse_score < min_div_score) { min_div_score = entry->diverse_score; }
+}
+
 static void update_pareto_frontier (struct queue_entry* new_entry) {
   int new_frontier_size = 0;
   struct queue_entry* temp_frontier[MAX_PARETO_FRONT];
   u8 is_dominated = 0;
-  
-  for (int i = 0; i < pareto_size; i++) {
-    if (!dominates(new_entry, pareto_frontier[i])) {
-      temp_frontier[new_frontier_size++] = pareto_frontier[i];
-    }
 
-    if (dominates(pareto_frontier[i], new_entry)) {
+  if(new_entry->entry_id >= queued_paths) {
+    LOGF("[PacFuzz] [pareto] save to all_entries %d\n", new_entry->entry_id);
+    if (all_entries == NULL) {
+      all_entries = new_entry;
+    } else {
+      struct queue_entry* q = all_entries;
+      while(q->next != NULL) {
+        q = q->next;
+      }
+      q->next = new_entry;
+    }
+  }
+
+  if (all_entries == NULL) {
+    WARNF("[PacFuzz] [pareto] all_entries is NULL\n");
+    return;
+  }
+
+  // Recalculate diversity score and update the pareto frontier from all_entries
+  struct queue_entry* q = all_entries;
+  while(q != NULL) {
+    recalculate_diversity_score(q);
+    if (!dominates(new_entry, q)) {
+      temp_frontier[new_frontier_size++] = q;
+      temp_frontier[new_frontier_size++]->next = NULL; // Cut next target just for test
+    }
+    if (dominates(q, new_entry)) {
       is_dominated = 1;
     }
+    q = q->next;
   }
   
   if (!is_dominated) {
@@ -952,7 +987,7 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
   }
   
   for (int i = 0; i < new_frontier_size; i++) {
-        pareto_frontier[i] = temp_frontier[i];
+    pareto_frontier[i] = temp_frontier[i];
   }
 
   pareto_size = new_frontier_size;
@@ -1326,14 +1361,14 @@ static void update_dfg_node_cnt(void) {
 /* PacFuzz: compute the diversity score of the current execution path. 
    Should be called after update_dfg_node_cnt. */
 
-static u64 compute_diversity_score(void) {
+static u64 compute_diversity_score(struct queue_entry* q) {
 
   double div_score = 0;
   u32 i = DFG_MAP_SIZE;
 
   while (i--) {
-    if (dfg_bits[i] > 0) {
-      div_score += dfg_bits[i] * pow(0.9, dfg_cnt[i]);
+    if (q->dfg_bits[i] > 0) {
+      div_score += q->dfg_bits[i] * pow(0.9, q->dfg_cnt[i]);
     }
   }
 
@@ -2976,8 +3011,9 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
   q->prox_score  = compute_proximity_score();
+  q->dfg_bits = dfg_bits;
   update_dfg_node_cnt();
-  q->diverse_score = compute_diversity_score();
+  q->diverse_score = compute_diversity_score(q);
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
