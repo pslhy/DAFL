@@ -1295,6 +1295,7 @@ static u64 recompute_proximity_score(struct queue_entry* q) {
 
 static void update_dfg_node_cnt(void) {
     u32 i = DFG_MAP_SIZE;
+    LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Updating dfg node count\n", get_cur_time() - start_time);
 
     while (i--) {
       if (dfg_bits[i] > 0) {
@@ -1353,6 +1354,8 @@ static u64 compute_diversity_score(struct queue_entry* q) {
 
 static void add_to_all_entries(struct queue_entry* entry) {
 
+  LOGF("[PacFuzz] [all_entries] [time %llu] Adding entry : %d\n", get_cur_time() - start_time, entry->entry_id);
+
   // No zero prox_score entry
   if (entry->prox_score == 0) {
     entry->prox_score = recompute_proximity_score(entry);
@@ -1409,6 +1412,8 @@ static struct queue_entry* copy_queue_entry(struct queue_entry* entry) {
 }
 
 static void find_pareto_frontier() {
+  LOGF("[PacFuzz] [pareto] [time %llu] Finding Pareto frontier\n", get_cur_time() - start_time);
+
   int new_frontier_size = 0;
   frontier = NULL;
   u64 max_diverse_score = 0;
@@ -1431,7 +1436,7 @@ static void find_pareto_frontier() {
   }
 
   pareto_size = new_frontier_size;
-  LOGF("[PacFuzz] [pareto] Pareto frontier updated with %d entries\n", pareto_size);
+  LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier updated with %d entries\n", get_cur_time() - start_time, pareto_size);
 }
 
 /* Destructively simplify trace by eliminating hit count information
