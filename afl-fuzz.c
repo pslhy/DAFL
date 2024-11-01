@@ -1339,6 +1339,19 @@ static void recompute_diversity_score(struct queue_entry* entry) {
   if (entry->diverse_score < min_div_score) { min_div_score = entry->diverse_score; }
 }
 
+static struct queue_entry* copy_queue_entry(struct queue_entry* entry) {
+  struct queue_entry* new_entry = ck_alloc(sizeof(struct queue_entry));
+  new_entry->fname = entry->fname;
+  new_entry->len = entry->len;
+  new_entry->depth = entry->depth;
+  new_entry->passed_det = entry->passed_det;
+  new_entry->prox_score = entry->prox_score;
+  new_entry->diverse_score = entry->diverse_score;
+  new_entry->entry_id = entry->entry_id;
+
+  return new_entry;
+}
+
 static void update_pareto_frontier (struct queue_entry* new_entry) {
   int new_frontier_size = 0;
   struct queue_entry* temp_frontier[MAX_PARETO_FRONT];
@@ -1354,8 +1367,14 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
   while(q != NULL) {
     recompute_diversity_score(q);
     if (!dominates(new_entry, q)) {
-      temp_frontier[new_frontier_size++] = q;
-      temp_frontier[new_frontier_size++]->next = NULL; // Cut next target just for test
+      struct queue_entry* temp_entry = q;
+      
+      if(q->next != NULL) {
+        temp_entry = copy_queue_entry(q);
+        temp_entry->next = NULL; // Cut next target just for test
+      } 
+
+      temp_frontier[new_frontier_size++] = temp_entry;
     }
     if (dominates(q, new_entry)) {
       is_dominated = 1;
