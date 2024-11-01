@@ -869,7 +869,7 @@ static void init_dfg() {
 
   fclose(file);
   
-  LOGF("[PacFuzz][Init] Check dfg_node_info_map target: %u, max_score: %u\n", dfg_target_idx, max_score);
+  LOGF("[PacFuzz] [init] Check dfg_node_info_map target: %u, max_score: %u\n", dfg_target_idx, max_score);
 }
 
 /* PacFuzz: Add a meory valuation hash to the hash map. */
@@ -8700,6 +8700,7 @@ int main(int argc, char** argv) {
       // If pareto frontier is not empty then choose the first item.
       // Pop it and set it as the current item.
       queue_cur = pop_pareto_frontier();
+      LOGF("[PacFuzz] [seed select] queue_cur: %d, prox score: %llu, diverse score: %llu\n", queue_cur->entry_id, queue_cur->prox_score, queue_cur->diverse_score);
     }
   }
 
