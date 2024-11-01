@@ -3921,6 +3921,8 @@ keep_as_crash:
     case FAULT_NONE:
       total_normals++;
 
+      if (!has_new_bits(virgin_crash)) return keeping;
+
 #ifndef SIMPLE_FILES
 
       fn = alloc_printf("%s/normals/id:%06llu,%llu,sig:%02u,%s", out_dir,
