@@ -851,14 +851,18 @@ static void mark_as_redundant(struct queue_entry* q, u8 state) {
 /* PacFuzz: Save every testcase to all_entries */
 
 static void add_to_all_entries(struct queue_entry* entry) {
-  LOGF("[PacFuzz] [all_entries] save to all_entries %d\n", new_entry->entry_id);
+  LOGF("[PacFuzz] [all_entries] save to all_entries %d\n", entry->entry_id);
   if (all_entries == NULL) {
     all_entries = entry;
   } else {
+    if (all_entries->entry_id >= entry->entry_id) return;
+
     struct queue_entry* q = all_entries;
+
     while(q->next != NULL) {
       q = q->next;
     }
+    
     q->next = entry;
   }
 }
@@ -1015,7 +1019,6 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u64 
   if (q->depth > max_depth) max_depth = q->depth;
 
   sorted_insert_to_queue(q);
-  add_to_all_entries(q);
 
   queue_last = q;
   queued_paths++;
@@ -3024,6 +3027,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   q->cal_failed  = 0;
 
   update_pareto_frontier(q);
+  add_to_all_entries(q);
 
   total_bitmap_size += q->bitmap_size;
   total_bitmap_entries++;
