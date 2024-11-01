@@ -1369,8 +1369,9 @@ static void add_to_all_entries(struct queue_entry* entry) {
     }
 
     struct queue_entry* q = all_entries;
+    struct queue_entry* q_last;
 
-    while(q->snext != NULL) {
+    while(q != NULL) {
       if (q->prox_score <= entry->prox_score) {
         if (q->sprev == NULL) {
           all_entries = entry;
@@ -1383,10 +1384,13 @@ static void add_to_all_entries(struct queue_entry* entry) {
         q->sprev = entry;
         return; 
       }
+      
+      q_last = q;
+      q = q->snext;
     }
 
-    q->snext = entry;
-    entry->sprev = q;
+    q_last->snext = entry;
+    entry->sprev = q_last;
     entry->snext = NULL;
   }
 }
