@@ -3951,6 +3951,8 @@ keep_as_crash:
 
   ck_free(fn);
 
+  LOGF("[PacFuzz] [save_if_interesting] [saved] [fault %s] [time %llu]\n", fault_str[fault], get_cur_time() - start_time);
+
   return keeping;
 
 }
@@ -8805,7 +8807,7 @@ int main(int argc, char** argv) {
 
       // If pareto frontier is not empty then choose the first item.
       // Pop it and set it as the current item.
-      queue_cur = pop_pareto_frontier();
+      queue_cur = frontier;
       LOGF("[PacFuzz] [seed select] queue_cur: %d, prox score: %llu, diverse score: %llu\n", queue_cur->entry_id, queue_cur->prox_score, queue_cur->diverse_score);
     }
   }
