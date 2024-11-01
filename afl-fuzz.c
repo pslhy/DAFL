@@ -5232,6 +5232,8 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   u8 fault;
 
+  LOGF("[PacFuzz] [common_fuzz_stuff] entering\n");
+
   if (post_handler) {
 
     out_buf = post_handler(out_buf, &len);
@@ -7332,6 +7334,8 @@ static void sync_fuzzers(char** argv) {
 
     static u8 stage_tmp[128];
 
+    LOGF("[PacFuzz] [sync_fuzzers] Syncing with '%s'...", sd_ent->d_name);
+
     DIR* qd;
     struct dirent* qd_ent;
     u8 *qd_path, *qd_synced_path;
@@ -7380,6 +7384,8 @@ static void sync_fuzzers(char** argv) {
       u8* path;
       s32 fd;
       struct stat st;
+
+      LOGF("[PacFuzz] [sync_fuzzers] Syncing with '%s/%s'...", sd_ent->d_name, qd_ent->d_name);
 
       if (qd_ent->d_name[0] == '.' ||
           sscanf(qd_ent->d_name, CASE_PREFIX "%06u", &syncing_case) != 1 ||
