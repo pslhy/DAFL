@@ -3242,7 +3242,6 @@ static void perform_dry_run(char** argv) {
     close(fd);
 
     res = calibrate_case(argv, q, use_mem, 0, 1);
-    ck_free(use_mem);
 
     if (stop_soon) return;
 
@@ -3393,6 +3392,8 @@ static void perform_dry_run(char** argv) {
         break;
 
     }
+    
+    ck_free(use_mem);
 
     if (q->var_behavior) WARNF("Instrumentation output varies across runs.");
 
