@@ -1373,7 +1373,7 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
 
   LOGF("[PacFuzz] [pareto] start calculate pareto frontier\n");
 
-  while(q != NULL || q->next != q) {
+  while(q != NULL) {
     recompute_diversity_score(q);
     LOGF("[PacFuzz] [pareto] error checker %llu\n", q->entry_id);
     if (!dominates(new_entry, q)) {
@@ -1390,6 +1390,7 @@ static void update_pareto_frontier (struct queue_entry* new_entry) {
       is_dominated = 1;
     }
     q = q->next;
+    if (q == NULL || (q->next != NULL && q->next == q)) break;
   }
   
   if (!is_dominated) {
