@@ -1342,8 +1342,8 @@ static void update_dfg_node_cnt(void) {
         int new_value = prev_value * 0.9;
         while (elem && elem->entry) {
           u64 gap = (prev_value - new_value) > 0 ? (prev_value - new_value) : 0;
-          if (-gap > elem->entry->diverse_score) {
-            gap = -elem->entry->diverse_score;
+          if (gap > elem->entry->diverse_score) {
+            gap = elem->entry->diverse_score;
           }
           total_div_score -= gap;
           elem->entry->diverse_score -= gap;
