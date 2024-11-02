@@ -986,7 +986,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
     q_probe = queue;
     while (q_probe) {
 
-      LOGF("[PacFuzz] [sorted_insert_to_queue] q_probe: %p, q_probe->diverse_score: %llu, q_probe->proximity_score: %llu\n", q_probe, q_probe->diverse_score, q_probe->prox_score);
+      //LOGF("[PacFuzz] [sorted_insert_to_queue] q_probe: %p, q_probe->diverse_score: %llu, q_probe->proximity_score: %llu\n", q_probe, q_probe->diverse_score, q_probe->prox_score);
 
       if ((i % 100 == 0) && (i / 100 < 1024)) {
         shortcut_per_100[(i / 100)] = q_probe;
@@ -1327,7 +1327,7 @@ static u64 recompute_proximity_score(struct queue_entry* q) {
 
 static void update_dfg_node_cnt(void) {
     u32 i = DFG_MAP_SIZE;
-    LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Updating dfg node count\n", get_cur_time() - start_time);
+    //LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Updating dfg node count\n", get_cur_time() - start_time);
 
     while (i--) {
       if (affected_entries[i] && dfg_bits[i] > 0) {
@@ -1349,7 +1349,7 @@ static void update_dfg_node_cnt(void) {
           elem->entry->diverse_score -= gap;
           if (elem->entry->diverse_score > max_div_score) { max_div_score = elem->entry->diverse_score; }
           if (elem->entry->diverse_score < min_div_score) { min_div_score = elem->entry->diverse_score; }
-          LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Entry ID: %d, Diverse score: %llu\n", get_cur_time() - start_time, elem->entry->entry_id, elem->entry->diverse_score);
+          //LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Entry ID: %d, Diverse score: %llu\n", get_cur_time() - start_time, elem->entry->entry_id, elem->entry->diverse_score);
           elem = elem->next;
         }
       }
@@ -5309,7 +5309,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
   write_to_testcase(out_buf, len);
 
   fault = run_target(argv, exec_tmout, "USELESS=0", 0);
-  LOGF("[PacFuzz] [common_fuzz_stuff] fault: %s\n", fault_str[fault]);
+  // LOGF("[PacFuzz] [common_fuzz_stuff] fault: %s\n", fault_str[fault]);
 
   if (stop_soon) return 1;
 
