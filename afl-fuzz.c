@@ -3091,7 +3091,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   q->cal_failed  = 0;
 
   add_to_all_entries(q);
-  find_pareto_frontier();
+  find_pareto_frontier(1);
 
   total_bitmap_size += q->bitmap_size;
   total_bitmap_entries++;
