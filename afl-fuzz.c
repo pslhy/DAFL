@@ -265,6 +265,7 @@ struct queue_entry {
       var_behavior,                   /* Variable behavior?               */
       favored,                        /* Currently favored?               */
       fs_redundant;                   /* Marked as redundant in the fs?   */
+      pareto_used;                    /* Used in pareto frontier?         */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       exec_cksum;                     /* Checksum of the execution trace  */
@@ -1391,7 +1392,25 @@ static void add_to_all_entries(struct queue_entry* entry) {
 }
 
 
-static void find_pareto_frontier() {
+static struct queue_entry* pop_pareto_frontier() {
+  LOGF("[PacFuzz] [pareto] [time %llu] Popping Pareto frontier\n", get_cur_time() - start_time);
+
+  if (frontier == NULL) {
+    FATAL("Popping from an empty Pareto frontier");
+  }
+
+  struct queue_entry* q = frontier;
+  q->pareto_used = 1;
+  frontier = q->pareto_next;
+
+  pareto_size--;
+
+  LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier popped, new size %d\n", get_cur_time() - start_time, pareto_size);
+
+  return q;
+}
+
+static void find_pareto_frontier(u8 only_new) {
   LOGF("[PacFuzz] [pareto] [time %llu] Finding Pareto frontier\n", get_cur_time() - start_time);
 
   int new_frontier_size = 0;
@@ -1401,7 +1420,11 @@ static void find_pareto_frontier() {
   struct queue_entry* q = all_entries;
   
   while(q != NULL) {
-    if (q->diverse_score > max_diverse_score) {
+    if (q->diverse_score > max_diverse_score && (!only_new || q->pareto_used == 0)) {
+      if(!only_new) {
+        q->pareto_used = 0;
+      }
+
       if (frontier == NULL) {
         frontier = q;
       } else {
@@ -8817,18 +8840,20 @@ int main(int argc, char** argv) {
     else {
       queue_cur = NULL;
       // If pareto frontier is empty and recycled queue is empty then error.
-      if (pareto_size == 0 && recycled_size == 0) {
+      if (frontier == NULL && all_entries == NULL) {
         WARNF("[PacFuzz] [err] [seed select] pareto and recycled queue are empty.");
       }
       // If recycled queue is not empty then re-calculate the pareto frontier.
-      if (pareto_size == 0 && recycled_size > 0) {
+      if (frontier == NULL && all_entries != NULL) {
         LOGF("[PacFuzz] [seed select] queue recycled.\n");
-        find_pareto_frontier();
+        find_pareto_frontier(0);
+      } else {
+        find_pareto_frontier(1);
       }
 
       // If pareto frontier is not empty then choose the first item.
       // Pop it and set it as the current item.
-      queue_cur = frontier;
+      queue_cur = pop_pareto_frontier();
       LOGF("[PacFuzz] [seed select] queue_cur: %d, prox score: %llu, diverse score: %llu\n", queue_cur->entry_id, queue_cur->prox_score, queue_cur->diverse_score);
     }
   }
