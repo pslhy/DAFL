@@ -985,7 +985,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
     q_probe = queue;
     while (q_probe) {
 
-      LOGF("[PacFuzz] [sorted_insert_to_queue] q_probe: %p, q_probe->diverse_score: %llu, q->diverse_score: %llu\n", q_probe, q_probe->diverse_score, q->diverse_score);
+      LOGF("[PacFuzz] [sorted_insert_to_queue] q_probe: %p, q_probe->diverse_score: %llu, q_probe->proximity_score: %llu\n", q_probe, q_probe->diverse_score, q_probe->prox_score);
 
       if ((i % 100 == 0) && (i / 100 < 1024)) {
         shortcut_per_100[(i / 100)] = q_probe;
