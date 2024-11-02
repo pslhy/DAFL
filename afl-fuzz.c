@@ -282,6 +282,7 @@ struct queue_entry {
   u32* dfg_bits;                      /* DFG coverage bitmap              */
 
   struct queue_entry *next;           /* Next element, if any             */
+  struct queue_entry *pareto_next;    /* Next element in pareto frontier  */
   struct queue_entry *snext;          /* Next element (sorted), if any    */
   struct queue_entry *sprev;          /* Prev element (sorted), if any    */
   struct queue_entry *affected_next;  /* Next element in affected list    */
@@ -924,16 +925,6 @@ static u8 dominates(struct queue_entry* q1, struct queue_entry* q2) {
 }
 
 
-static struct queue_entry* pop_pareto_frontier() {
-  if (pareto_size == 0) {
-    return NULL;
-  }
-
-  struct queue_entry* entry = frontier;
-
-  return entry;
-}
-
 
 /* Insert a test case to the queue, preserving the sorted order based on the
  * proximity score. Updates global variables 'queue', 'shortcut_per_100', and
@@ -1400,25 +1391,6 @@ static void add_to_all_entries(struct queue_entry* entry) {
 }
 
 
-static struct queue_entry* copy_queue_entry(struct queue_entry* entry) {
-  struct queue_entry* new_entry = ck_alloc(sizeof(struct queue_entry));
-  new_entry->fname = entry->fname;
-  new_entry->len = entry->len;
-  new_entry->depth = entry->depth;
-  new_entry->passed_det = entry->passed_det;
-  new_entry->prox_score = entry->prox_score;
-  new_entry->diverse_score = entry->diverse_score;
-  new_entry->entry_id = entry->entry_id;
-  new_entry->next = entry->next;
-  new_entry->handled_in_cycle = entry->handled_in_cycle;
-  new_entry->var_behavior = entry->var_behavior;
-  new_entry->fs_redundant = entry->fs_redundant;
-  new_entry->trace_mini = entry->trace_mini;
-  new_entry->dfg_bits = entry->dfg_bits;
-
-  return new_entry;
-}
-
 static void find_pareto_frontier() {
   LOGF("[PacFuzz] [pareto] [time %llu] Finding Pareto frontier\n", get_cur_time() - start_time);
 
@@ -1433,7 +1405,7 @@ static void find_pareto_frontier() {
       if (frontier == NULL) {
         frontier = q;
       } else {
-        frontier->next = q;
+        frontier->pareto_next = q;
         frontier = q;
       }
       
