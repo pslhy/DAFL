@@ -290,6 +290,7 @@ struct queue_entry {
 
 struct entry_list {
   struct queue_entry *entry;
+  u32 score;
   struct entry_list *next;
 };
 
@@ -1332,7 +1333,11 @@ static void update_dfg_node_cnt(void) {
       if (affected_entries[i] && dfg_bits[i] > 0) {
         // Decrease the score of the affected entries
         struct entry_list* elem = affected_entries[i];
-        u64 prev_value = pow(0.9, dfg_cnt[i]);
+        if(!elem) {
+          dfg_cnt[i] += 1;
+          continue;
+        }
+        u64 prev_value = elem->score * pow(0.9, dfg_cnt[i]);
         dfg_cnt[i] += 1;
         u64 new_value = prev_value * 0.9;
         while (elem && elem->entry) {
@@ -1361,6 +1366,7 @@ static u64 compute_diversity_score(struct queue_entry* q) {
       div_score += q->dfg_bits[i] * pow(0.9, dfg_cnt[i]);
       struct entry_list* entry_elem = ck_alloc(sizeof(struct entry_list));
       entry_elem->entry = q;
+      entry_elem->score = q->dfg_bits[i]
       
       // Add the node to the affected_entries
       if (affected_entries[i] == NULL) {
