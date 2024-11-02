@@ -1332,23 +1332,16 @@ static void update_dfg_node_cnt(void) {
       if (affected_entries[i] && dfg_bits[i] > 0) {
         // Decrease the score of the affected entries
         struct entry_list* elem = affected_entries[i];
-        u64 affected_value = pow(0.9, dfg_cnt[i]);
-        while (elem && elem->entry) {
-          total_div_score -= elem->entry->diverse_score;
-          elem->entry->diverse_score -= affected_value;
-          elem = elem->next;
-        }
-
+        u64 prev_value = pow(0.9, dfg_cnt[i]);
         dfg_cnt[i] += 1;
-
-        // Recompute and update the affected entries
-        elem = affected_entries[i];
-        affected_value = pow(0.9, dfg_cnt[i]);
+        u64 new_value = new_value * 0.9;
         while (elem && elem->entry) {
-          elem->entry->diverse_score += affected_value;
-          total_div_score += elem->entry->diverse_score;
+          total_div_score -= (prev_value - new_value);
+          elem->entry->diverse_score -= prev_value;
+          elem->entry->diverse_score += new_value;
           if (elem->entry->diverse_score > max_div_score) { max_div_score = elem->entry->diverse_score; }
           if (elem->entry->diverse_score < min_div_score) { min_div_score = elem->entry->diverse_score; }
+          LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Entry ID: %d, Diverse score: %f\n", get_cur_time() - start_time, elem->entry->entry_id, elem->entry->diverse_score);
           elem = elem->next;
         }
       }
