@@ -950,7 +950,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
     q_probe = queue;
     while (q_probe) {
 
-      // LOGF("[PacFuzz] [sorted_insert_to_queue] q_probe: %p, q_probe->diverse_score: %llu, q->diverse_score: %llu\n", q_probe, q_probe->diverse_score, q->diverse_score);
+      LOGF("[PacFuzz] [sorted_insert_to_queue] q_probe: %p, q_probe->diverse_score: %llu, q->diverse_score: %llu\n", q_probe, q_probe->diverse_score, q->diverse_score);
 
       if ((i % 100 == 0) && (i / 100 < 1024)) {
         shortcut_per_100[(i / 100)] = q_probe;
@@ -980,7 +980,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
 static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u64 diverse_score) {
 
-  // LOGF("[PacFuzz] [add_to_queue] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu, diverse_score: %llu\n", fname, len, passed_det, prox_score, diverse_score);
+  LOGF("[PacFuzz] [add_to_queue] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu, diverse_score: %llu\n", fname, len, passed_det, prox_score, diverse_score);
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -1291,7 +1291,7 @@ static u64 recompute_proximity_score(struct queue_entry* q) {
 
 static void update_dfg_node_cnt(void) {
     u32 i = DFG_MAP_SIZE;
-    // LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Updating dfg node count\n", get_cur_time() - start_time);
+    LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Updating dfg node count\n", get_cur_time() - start_time);
 
     while (i--) {
       if (dfg_bits[i] > 0) {
@@ -1330,7 +1330,7 @@ static u64 compute_diversity_score(struct queue_entry* q) {
 
   while (i--) {
     if (q->dfg_bits[i] > 0) {
-      div_score += q->dfg_bits[i] * pow(0.9, dfg_cnt[i]);
+      div_score += q->dfg_bits[i] * pow(0.9, q->dfg_cnt[i]);
       
       // Add the node to the affected_entries
       if (affected_entries[i] == NULL) {
@@ -3782,6 +3782,9 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 #endif /* ^!SIMPLE_FILES */
 
     add_to_queue(fn, len, 0, prox_score, 0);
+    queue_last->dfg_bits = dfg_bits;
+    queue_last->diverse_score = compute_diversity_score(queue_last);
+    update_dfg_node_cnt();
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
@@ -3958,7 +3961,7 @@ keep_as_crash:
 
   ck_free(fn);
 
-  // LOGF("[PacFuzz] [save_if_interesting] [saved] [fault %s] [time %llu]\n", fault_str[fault], get_cur_time() - start_time);
+  LOGF("[PacFuzz] [save_if_interesting] [saved] [fault %s] [time %llu]\n", fault_str[fault], get_cur_time() - start_time);
 
   return keeping;
 
@@ -5265,7 +5268,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
   write_to_testcase(out_buf, len);
 
   fault = run_target(argv, exec_tmout, "USELESS=0", 0);
-  // LOGF("[PacFuzz] [common_fuzz_stuff] fault: %s\n", fault_str[fault]);
+  LOGF("[PacFuzz] [common_fuzz_stuff] fault: %s\n", fault_str[fault]);
 
   if (stop_soon) return 1;
 
