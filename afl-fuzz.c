@@ -1405,7 +1405,7 @@ static void find_pareto_frontier() {
       if (frontier == NULL) {
         frontier = q;
       } else {
-        frontier->pareto_next = q;
+        q->pareto_next = frontier;
         frontier = q;
       }
 
