@@ -1334,7 +1334,7 @@ static u64 compute_diversity_score(struct queue_entry* q) {
   while (i--) {
     if (q->dfg_bits[i] > 0) {
       div_score += q->dfg_bits[i] * pow(0.9, dfg_cnt[i]);
-      struct entry_list* entry_elem;
+      struct entry_list* entry_elem = ck_alloc(sizeof(struct entry_list));
       entry_elem->entry = q;
       
       // Add the node to the affected_entries
