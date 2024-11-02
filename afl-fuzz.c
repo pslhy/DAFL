@@ -1404,6 +1404,7 @@ static void find_pareto_frontier() {
     if (q->diverse_score > max_diverse_score) {
       if (frontier == NULL) {
         frontier = q;
+        max_diverse_score = q->diverse_score;
       } else {
         frontier->pareto_next = q;
         frontier = q;
