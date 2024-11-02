@@ -156,7 +156,7 @@ EXP_ST u8* trace_bits;                /* SHM with code coverage bitmap    */
 EXP_ST u32* dfg_bits;                 /* SHM with DFG coverage bitmap     */
 
 EXP_ST u32 dfg_target_idx;            /* Index of the target DFG node     */
-EXP_ST u64 dfg_cnt[DFG_MAP_SIZE];     /* DFG node hit count               */
+EXP_ST u64 dfg_cnt[DFG_MAP_SIZE + 1];     /* DFG node hit count               */
 
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
