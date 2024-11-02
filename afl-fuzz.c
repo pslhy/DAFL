@@ -289,7 +289,7 @@ struct queue_entry {
 };
 
 struct entry_list {
-  struct queue_entry *q_entry;
+  struct queue_entry *entry;
   struct entry_list *next;
 };
 
