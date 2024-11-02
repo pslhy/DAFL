@@ -1417,7 +1417,7 @@ static void find_pareto_frontier() {
   }
 
   pareto_size = new_frontier_size;
-  LOGF("[PacFuzz] [pareto] head :: diversity score %llu / proximity score %llu", frontier->diverse_score, frontier->prox_score);
+  LOGF("[PacFuzz] [pareto] head :: diversity score %llu / proximity score %llu\n", frontier->diverse_score, frontier->prox_score);
   LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier updated with %d entries\n", get_cur_time() - start_time, pareto_size);
 }
 
