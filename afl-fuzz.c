@@ -887,6 +887,38 @@ static void init_dfg() {
   LOGF("[PacFuzz] [init] Check dfg_node_info_map target: %u, max_score: %u\n", dfg_target_idx, max_score);
 }
 
+/* PacFuzz: Get DFG node hit count */
+
+static void add_dfg_hash(u32 hashkey) {
+    struct hash_entry *entry;
+    HASH_FIND_INT(dfg_hash, &hashkey, entry);
+
+    if (entry == NULL) {
+        entry = (struct hash_entry*)malloc(sizeof(struct hash_entry));
+        entry->key = hashkey;
+        entry->is_used = 1;
+        HASH_ADD_INT(dfg_hash, key, entry);
+    }
+}
+
+/* PacFuzz: Check if a DFG node is used. */
+
+int is_dfg_used(u32 hashkey) {
+    struct hash_entry *entry;
+    HASH_FIND_INT(dfg_hash, &hashkey, entry);
+    return (entry != NULL) ? entry->is_used : 0;
+}
+
+/* PacFuzz: Free the DFG hashmap. */
+
+void free_dfg_hash() {
+    struct hash_entry *entry, *tmp;
+    HASH_ITER(hh, dfg_hash, entry, tmp) {
+        HASH_DEL(dfg_hash, entry);
+        free(entry);
+    }
+}
+
 /* PacFuzz: Add a meory valuation hash to the hash map. */
 
 static void add_memval_hash(u32 hashkey) {
@@ -3761,12 +3793,15 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  keeping = 0, res;
   u64 prox_score, div_score;
 
+  u8 dfg_new_bits = is_dfg_used(get_dfg_hash());
+  add_dfg_hash(get_dfg_hash());
+
   if (fault == crash_mode) {
 
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
 
-    if (!(hnb = has_new_bits(virgin_bits))) {
+    if (!(hnb = has_new_bits(virgin_bits) || dfg_new_bits)) {
       if (crash_mode) total_crashes++;
       return 0;
     }
@@ -3790,8 +3825,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
     add_to_queue(fn, len, 0, prox_score, 0);
     queue_last->dfg_bits = dfg_bits;
-    queue_last->diverse_score = compute_diversity_score(queue_last);
-    update_dfg_node_cnt();
+    // queue_last->diverse_score = compute_diversity_score(queue_last);
+    // update_dfg_node_cnt();
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
@@ -3840,7 +3875,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
         simplify_trace((u32*)trace_bits);
 #endif /* ^WORD_SIZE_64 */
 
-        if (!has_new_bits(virgin_tmout)) return keeping;
+        if (!has_new_bits(virgin_tmout) && !dfg_new_bits) return keeping;
 
       }
 
@@ -3904,7 +3939,7 @@ keep_as_crash:
         simplify_trace((u32*)trace_bits);
 #endif /* ^WORD_SIZE_64 */
 
-        if (!has_new_bits(virgin_crash)) return keeping;
+        if (!has_new_bits(virgin_crash) && !dfg_new_bits) return keeping;
 
       }
 
@@ -3936,7 +3971,7 @@ keep_as_crash:
     case FAULT_NONE:
       total_normals++;
 
-      if (!has_new_bits(virgin_crash)) return keeping;
+      if (!has_new_bits(virgin_crash) && !dfg_new_bits) return keeping;
 
 #ifndef SIMPLE_FILES
 
@@ -8907,6 +8942,7 @@ stop_fuzzing:
   ck_free(target_path);
   ck_free(sync_id);
   free_memval_hash();
+  free_dfg_hash();
 
   alloc_report();
 
