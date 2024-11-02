@@ -949,7 +949,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
     q_probe = queue;
     while (q_probe) {
 
-      LOGF("[PacFuzz] [sorted_insert_to_queue] q_probe: %p, q_probe->diverse_score: %llu, q->diverse_score: %llu\n", q_probe, q_probe->diverse_score, q->diverse_score);
+      // LOGF("[PacFuzz] [sorted_insert_to_queue] q_probe: %p, q_probe->diverse_score: %llu, q->diverse_score: %llu\n", q_probe, q_probe->diverse_score, q->diverse_score);
 
       if ((i % 100 == 0) && (i / 100 < 1024)) {
         shortcut_per_100[(i / 100)] = q_probe;
@@ -979,7 +979,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
 static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u64 diverse_score) {
 
-  LOGF("[PacFuzz] [add_to_queue] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu, diverse_score: %llu\n", fname, len, passed_det, prox_score, diverse_score);
+  // LOGF("[PacFuzz] [add_to_queue] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu, diverse_score: %llu\n", fname, len, passed_det, prox_score, diverse_score);
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -1290,7 +1290,7 @@ static u64 recompute_proximity_score(struct queue_entry* q) {
 
 static void update_dfg_node_cnt(void) {
     u32 i = DFG_MAP_SIZE;
-    LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Updating dfg node count\n", get_cur_time() - start_time);
+    // LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Updating dfg node count\n", get_cur_time() - start_time);
 
     while (i--) {
       if (dfg_bits[i] > 0) {
@@ -2670,7 +2670,7 @@ static u8 run_target(char** argv, u32 timeout, char* env_opt, u8 force_dumbmode)
   static u32 prev_timed_out = 0;
   static u64 exec_ms = 0;
 
-  LOGF("[PacFuzz] [run_target] timeout: %u, env_opt: %s, force_dumbmode: %d, dumb_mode: %d, no_forkserver: %d\n", timeout, env_opt, force_dumbmode, dumb_mode, no_forkserver);
+  // LOGF("[PacFuzz] [run_target] timeout: %u, env_opt: %s, force_dumbmode: %d, dumb_mode: %d, no_forkserver: %d\n", timeout, env_opt, force_dumbmode, dumb_mode, no_forkserver);
 
   int status = 0;
   u32 tb4;
@@ -2889,7 +2889,7 @@ static void write_to_testcase(void* mem, u32 len) {
 
   s32 fd = out_fd;
 
-  LOGF("[PacFuzz] [write_to_testcase] len: %u\n", len);
+  // LOGF("[PacFuzz] [write_to_testcase] len: %u\n", len);
 
   if (out_file) {
 
@@ -3255,7 +3255,7 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
   argv[0] = tmp_argv1;
   ck_free(tmpfile_env);
 
-  LOGF("[PacFuzz] [run_valuation] [run-completed] [fault %s] [time %llu]\n", fault_str[fault_tmp], get_cur_time() - start_time);
+  // LOGF("[PacFuzz] [run_valuation] [run-completed] [fault %s] [time %llu]\n", fault_str[fault_tmp], get_cur_time() - start_time);
 
   if (fault_tmp == FAULT_TMOUT || access(tmpfile, F_OK) != 0) {
     LOGF("[PacFuzz] [run_valuation] [timeout %d] [no-file %d] [time %llu]\n", fault_tmp == FAULT_TMOUT, access(tmpfile, F_OK) != 0, get_cur_time() - start_time);
@@ -3933,7 +3933,7 @@ keep_as_crash:
 
   ck_free(fn);
 
-  LOGF("[PacFuzz] [save_if_interesting] [saved] [fault %s] [time %llu]\n", fault_str[fault], get_cur_time() - start_time);
+  // LOGF("[PacFuzz] [save_if_interesting] [saved] [fault %s] [time %llu]\n", fault_str[fault], get_cur_time() - start_time);
 
   return keeping;
 
@@ -5212,7 +5212,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
 
   u8 fault;
 
-  LOGF("[PacFuzz] [common_fuzz_stuff] len: %d\n", len);
+  // LOGF("[PacFuzz] [common_fuzz_stuff] len: %d\n", len);
 
   if (post_handler) {
 
@@ -5224,7 +5224,7 @@ EXP_ST u8 common_fuzz_stuff(char** argv, u8* out_buf, u32 len) {
   write_to_testcase(out_buf, len);
 
   fault = run_target(argv, exec_tmout, "USELESS=0", 0);
-  LOGF("[PacFuzz] [common_fuzz_stuff] fault: %s\n", fault_str[fault]);
+  // LOGF("[PacFuzz] [common_fuzz_stuff] fault: %s\n", fault_str[fault]);
 
   if (stop_soon) return 1;
 
@@ -7315,7 +7315,7 @@ static void sync_fuzzers(char** argv) {
 
     static u8 stage_tmp[128];
 
-    LOGF("[PacFuzz] [sync_fuzzers] Syncing with '%s'...", sd_ent->d_name);
+    // LOGF("[PacFuzz] [sync_fuzzers] Syncing with '%s'...", sd_ent->d_name);
 
     DIR* qd;
     struct dirent* qd_ent;
@@ -7366,7 +7366,7 @@ static void sync_fuzzers(char** argv) {
       s32 fd;
       struct stat st;
 
-      LOGF("[PacFuzz] [sync_fuzzers] Syncing with '%s/%s'...", sd_ent->d_name, qd_ent->d_name);
+      // LOGF("[PacFuzz] [sync_fuzzers] Syncing with '%s/%s'...", sd_ent->d_name, qd_ent->d_name);
 
       if (qd_ent->d_name[0] == '.' ||
           sscanf(qd_ent->d_name, CASE_PREFIX "%06u", &syncing_case) != 1 ||
