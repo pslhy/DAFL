@@ -286,8 +286,11 @@ struct queue_entry {
   struct queue_entry *pareto_next;    /* Next element in pareto frontier  */
   struct queue_entry *snext;          /* Next element (sorted), if any    */
   struct queue_entry *sprev;          /* Prev element (sorted), if any    */
-  struct queue_entry *affected_next;  /* Next element in affected list    */
+};
 
+struct entry_list {
+  struct queue_entry *q_entry;
+  struct entry_list *next;
 };
 
 static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
@@ -302,7 +305,7 @@ static struct queue_entry*
 static struct queue_entry*
   top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
 
-static struct queue_entry*
+static struct entry_list*
   affected_entries[DFG_MAP_SIZE];     /* Entries affected by DFG nodes    */
 static struct queue_entry*
   all_entries;                        /* Keep track of all entries        */
@@ -1296,25 +1299,25 @@ static void update_dfg_node_cnt(void) {
     while (i--) {
       if (dfg_bits[i] > 0) {
         // Decrease the score of the affected entries
-        struct queue_entry* q = affected_entries[i];
+        struct entry_list* elem = affected_entries[i];
         u64 affected_value = pow(0.9, dfg_cnt[i]);
-        while (q) {
-          total_div_score -= q->diverse_score;
-          q->diverse_score -= affected_value;
-          q = q->affected_next;
+        while (elem) {
+          total_div_score -= elem->entry->diverse_score;
+          elem->entry->diverse_score -= affected_value;
+          elem = elem->next;
         }
 
         dfg_cnt[i] += 1;
 
         // Recompute and update the affected entries
-        q = affected_entries[i];
+        elem = affected_entries[i];
         affected_value = pow(0.9, dfg_cnt[i]);
-        while (q) {
-          q->diverse_score += affected_value;
-          total_div_score += q->diverse_score;
-          if (q->diverse_score > max_div_score) { max_div_score = q->diverse_score; }
-          if (q->diverse_score < min_div_score) { min_div_score = q->diverse_score; }
-          q = q->affected_next;
+        while (elem) {
+          elem->entry->diverse_score += affected_value;
+          total_div_score += elem->entry->diverse_score;
+          if (elem->entry->diverse_score > max_div_score) { max_div_score = elem->entry->diverse_score; }
+          if (elem->entry->diverse_score < min_div_score) { min_div_score = elem->entry->diverse_score; }
+          elem = elem->next;
         }
       }
     }
@@ -1331,16 +1334,20 @@ static u64 compute_diversity_score(struct queue_entry* q) {
   while (i--) {
     if (q->dfg_bits[i] > 0) {
       div_score += q->dfg_bits[i] * pow(0.9, dfg_cnt[i]);
+      struct entry_list* entry_elem;
+      entry_elem->entry = q;
       
       // Add the node to the affected_entries
       if (affected_entries[i] == NULL) {
-        affected_entries[i] = q;
+        affected_entries[i] = entry_elem;
       } else {
-        q->affected_next = affected_entries[i];
-        affected_entries[i] = q;
+        entry_elem->next = affected_entries[i];
+        affected_entries[i] = entry_elem;
       }
     }
   }
+
+  LOGF("[PacFuzz] [compute_diversity_score] [time %llu] Diverse score: %f\n", get_cur_time() - start_time, div_score);
 
   return div_score;
 }
