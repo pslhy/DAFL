@@ -1337,9 +1337,9 @@ static void update_dfg_node_cnt(void) {
           dfg_cnt[i] += 1;
           continue;
         }
-        u64 prev_value = elem->score * pow(0.9, dfg_cnt[i]);
+        int prev_value = elem->score * pow(0.9, dfg_cnt[i]);
         dfg_cnt[i] += 1;
-        u64 new_value = prev_value * 0.9;
+        int new_value = prev_value * 0.9;
         while (elem && elem->entry) {
           u64 gap = (prev_value - new_value) > 0 ? (prev_value - new_value) : 0;
           total_div_score -= gap;
