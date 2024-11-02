@@ -3795,15 +3795,12 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  keeping = 0, res;
   u64 prox_score, div_score;
 
-  u8 dfg_new_bits = is_dfg_used(get_dfg_hash());
-  add_dfg_hash(get_dfg_hash());
-
   if (fault == crash_mode) {
 
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
 
-    if (!(hnb = has_new_bits(virgin_bits) || dfg_new_bits)) {
+    if (!(hnb = has_new_bits(virgin_bits))) {
       if (crash_mode) total_crashes++;
       return 0;
     }
@@ -3877,7 +3874,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
         simplify_trace((u32*)trace_bits);
 #endif /* ^WORD_SIZE_64 */
 
-        if (!has_new_bits(virgin_tmout) && !dfg_new_bits) return keeping;
+        if (!has_new_bits(virgin_tmout)) return keeping;
 
       }
 
@@ -3941,7 +3938,7 @@ keep_as_crash:
         simplify_trace((u32*)trace_bits);
 #endif /* ^WORD_SIZE_64 */
 
-        if (!has_new_bits(virgin_crash) && !dfg_new_bits) return keeping;
+        if (!has_new_bits(virgin_crash)) return keeping;
 
       }
 
@@ -3973,7 +3970,7 @@ keep_as_crash:
     case FAULT_NONE:
       total_normals++;
 
-      if (!has_new_bits(virgin_crash) && !dfg_new_bits) return keeping;
+      if (!has_new_bits(virgin_crash)) return keeping;
 
 #ifndef SIMPLE_FILES
 
