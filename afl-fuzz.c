@@ -1341,9 +1341,9 @@ static void update_dfg_node_cnt(void) {
         dfg_cnt[i] += 1;
         u64 new_value = prev_value * 0.9;
         while (elem && elem->entry) {
-          total_div_score -= (prev_value - new_value);
-          elem->entry->diverse_score -= prev_value;
-          elem->entry->diverse_score += new_value;
+          u64 gap = (prev_value - new_value) > 0 ? (prev_value - new_value) : 0;
+          total_div_score -= gap;
+          elem->entry->diverse_score -= gap;
           if (elem->entry->diverse_score > max_div_score) { max_div_score = elem->entry->diverse_score; }
           if (elem->entry->diverse_score < min_div_score) { min_div_score = elem->entry->diverse_score; }
           LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Entry ID: %d, Diverse score: %llu\n", get_cur_time() - start_time, elem->entry->entry_id, elem->entry->diverse_score);
