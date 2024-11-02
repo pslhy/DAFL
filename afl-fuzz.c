@@ -1379,7 +1379,7 @@ static u64 compute_diversity_score(struct queue_entry* q) {
     }
   }
 
-  LOGF("[PacFuzz] [compute_diversity_score] [time %llu] Diverse score: %f\n", get_cur_time() - start_time, div_score);
+  LOGF("[PacFuzz] [compute_diversity_score] [time %llu] Diverse score: %f Entry ID: %d\n", get_cur_time() - start_time, div_score, q->entry_id);
 
   return div_score;
 }
