@@ -3092,8 +3092,8 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   q->bitmap_size = count_bytes(trace_bits);
   q->prox_score  = compute_proximity_score();
   q->dfg_bits = dfg_bits;
-  update_dfg_node_cnt();
   q->diverse_score = compute_diversity_score(q);
+  update_dfg_node_cnt();
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
