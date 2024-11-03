@@ -108,7 +108,7 @@ void initDFGNodeMap(char* dfg_file) {
     int dafl_score = stoi(dafl_score_str);
     dfg_node_map[targ_line] = std::make_pair(idx++, (unsigned int) dafl_score);
 
-    if (dafl_score > max_score) {
+    if (dafl_score >= max_score) {
       max_score = dafl_score;
       target_info = targ_line;
     }
@@ -118,6 +118,8 @@ void initDFGNodeMap(char* dfg_file) {
       exit(1);
     }
   }
+
+  OKF("Target node: %s with score %d", target_info.c_str(), max_score);
 }
 
 
@@ -242,11 +244,13 @@ bool AFLCoverage::runOnModule(Module &M) {
             std::ostringstream stream;
             stream << file_name << ":" << line_no;
             std::string targ_str = stream.str();
-            if (targ_str.compare(target_info) == 0) {
-              is_target_node = true;
-            }
             if (dfg_node_map.count(targ_str) > 0) {
               is_dfg_node = true;
+
+              if (targ_str.compare(target_info) == 0) {
+                is_target_node = true;
+              }
+
               auto node_info = dfg_node_map[targ_str];
               node_idx = node_info.first;
               node_score = node_info.second;
