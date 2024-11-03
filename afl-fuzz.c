@@ -1799,6 +1799,7 @@ EXP_ST void setup_shm(void) {
 
   u8* shm_str;
   u8* shm_str_dfg;
+  u8* shm_str_hit;
 
   if (!in_bitmap) memset(virgin_bits, 255, MAP_SIZE);
 
