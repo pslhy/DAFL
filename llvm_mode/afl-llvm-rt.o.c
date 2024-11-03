@@ -106,7 +106,6 @@ static void __afl_map_shm(void) {
        our parent doesn't give up on us. */
 
     __afl_area_ptr[0] = 1;
-    *__afl_area_target_hit_ptr = 0;
 
   }
 
@@ -212,9 +211,8 @@ int __afl_persistent_loop(unsigned int max_cnt) {
 
       memset(__afl_area_ptr, 0, MAP_SIZE);
       memset(__afl_area_dfg_ptr, 0, sizeof(u32) * DFG_MAP_SIZE);
+      memset(__afl_area_target_hit_ptr, 0, sizeof(u8));
       __afl_area_ptr[0] = 1;
-      __afl_prev_loc = 0;
-      *__afl_area_target_hit_ptr = 0;
     }
 
     cycle_cnt  = max_cnt;
