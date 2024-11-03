@@ -265,7 +265,7 @@ bool AFLCoverage::runOnModule(Module &M) {
         BasicBlock::iterator IP1 = BB.begin();  
         IRBuilder<> IRB1(&(*IP1));
 
-        OKF("Instrumented at target node: %s", target_info.c_str(), max_score);
+        OKF("Instrumented at target node: %s", target_info.c_str());
 
         StoreInst *Store =
             IRB1.CreateStore(ConstantInt::get(Int8Ty, 1), AFLMapHitPtr);
