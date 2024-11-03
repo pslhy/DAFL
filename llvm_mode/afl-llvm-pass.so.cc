@@ -275,7 +275,7 @@ bool AFLCoverage::runOnModule(Module &M) {
 
       if (is_target_node) {
         StoreInst *Store =
-            IRB.CreateStore(ConstantInt::get(Int8Ty, 0), AFLMapHitPtr);
+            IRB.CreateStore(ConstantInt::get(Int8Ty, 2), AFLMapHitPtr);
         Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
       }
 
