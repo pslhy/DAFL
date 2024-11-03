@@ -154,6 +154,7 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 
 EXP_ST u8* trace_bits;                /* SHM with code coverage bitmap    */
 EXP_ST u32* dfg_bits;                 /* SHM with DFG coverage bitmap     */
+EXP_ST u8* target_hit;                /* SHM with target hit              */
 
 EXP_ST u32 dfg_target_idx;            /* Index of the target DFG node     */
 EXP_ST u64 dfg_cnt[DFG_MAP_SIZE + 1];     /* DFG node hit count               */
@@ -166,6 +167,7 @@ static u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
 static s32 shm_id;                    /* ID of the SHM for code coverage  */
 static s32 shm_id_dfg;                /* ID of the SHM for DFG coverage   */
+static s32 shm_id_hit;                /* ID of the SHM for target hit     */
 
 static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
@@ -1806,6 +1808,7 @@ EXP_ST void setup_shm(void) {
   shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
   shm_id_dfg = shmget(IPC_PRIVATE, sizeof(u32) * DFG_MAP_SIZE,
                       IPC_CREAT | IPC_EXCL | 0600);
+  shm_id_hit = shmget(IPC_PRIVATE, sizeof(u8), IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -1813,6 +1816,7 @@ EXP_ST void setup_shm(void) {
 
   shm_str = alloc_printf("%d", shm_id);
   shm_str_dfg = alloc_printf("%d", shm_id_dfg);
+  shm_str_hit = alloc_printf("%d", shm_id_hit);
 
   /* If somebody is asking us to fuzz instrumented binaries in dumb mode,
      we don't want them to detect instrumentation, since we won't be sending
@@ -1821,15 +1825,19 @@ EXP_ST void setup_shm(void) {
 
   if (!dumb_mode) setenv(SHM_ENV_VAR, shm_str, 1);
   if (!dumb_mode) setenv(SHM_ENV_VAR_DFG, shm_str_dfg, 1);
+  if (!dumb_mode) setenv(SHM_ENV_VAR_HIT, shm_str_hit, 1);
 
   ck_free(shm_str);
   ck_free(shm_str_dfg);
+  ck_free(shm_str_hit);
 
   trace_bits = shmat(shm_id, NULL, 0);
   dfg_bits = shmat(shm_id_dfg, NULL, 0);
+  target_hit = shmat(shm_id_hit, NULL, 0);
 
   if (trace_bits == (void *)-1) PFATAL("shmat() failed");
   if (dfg_bits == (void *)-1) PFATAL("shmat() failed");
+  if (target_hit == (void *)-1) PFATAL("shmat() failed");
 
 }
 
@@ -3238,42 +3246,13 @@ static u32 hash_file(u8 *filename) {
    If the valuation is for crashed, the file ends with "----------------------------"
    If the valuation is for non-crashed, the file ends with "Passed" */
 
-static u8 is_crashed(u8 *filename) {
-  
-    FILE *file = fopen(filename, "r");
-  
-    if (!file) {
-      WARNF("Cannot open file %s", filename);
-      return 0;
-    }
-  
-    fseek(file, 0, SEEK_END);
-    u64 length = ftell(file);
-    fseek(file, 0, SEEK_SET);
-  
-    u8 *buf = ck_alloc_nozero(length);
-    fread(buf, 1, length, file);
-    fclose(file);
-  
-    u8 *end = buf + length - 1;
-    while (end > buf && *end == '\n') end--;
-    while (end > buf && *end == '\r') end--;
-  
-    u8 crashed = 0;
-    if (end - buf > 28 && !strncmp(end - 28, "----------------------------", 28)) {
-      crashed = 1;
-    } else if (end - buf > 6 && !strncmp(end - 6, "Passed", 6)) {
-      crashed = 0;
-    }
-  
-    ck_free(buf);
-    return crashed;
+static u8 is_crashed() {
+  return *target_hit;
 }
 
 /* PacFuzz: save valuation function */
 
-static void save_valuation(u32 val_hash, u8 *valuation_file) {
-  u8 crashed = is_crashed(valuation_file);
+static void save_valuation(u32 val_hash, u8 *valuation_file, u8 crashed) {
   u8 *target_file = alloc_printf("memory/%s/id:%06llu", crashed ? "neg" : "pos",
                                   crashed ? total_saved_crashes : total_saved_positives);
   LOGF("[PacFuzz] [save_valuation] [%s] [seed %d] [entry %d] [id %llu] [hash %u] [time %llu] [file %s]\n", crashed == 1 ? "neg" : "pos", queue_cur ? queue_cur->entry_id : -1, queue_last ? queue_last->entry_id : -1,
@@ -3352,7 +3331,7 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
   return 1;
 }
 
-static void get_valuation(char** argv, u8* use_mem, u32 len) {
+static void get_valuation(char** argv, u8* use_mem, u32 len, u8 crashed) {
   // Check current run is covering target line
   if (check_target_covered()) {
     LOGF("[PacFuzz] [get_valuation] [target-covered] [time %llu]\n", get_cur_time() - start_time);
@@ -3360,7 +3339,7 @@ static void get_valuation(char** argv, u8* use_mem, u32 len) {
     u8 *valuation_file;
     u8 success = run_valuation(1, argv, use_mem, len, &val_hash, &valuation_file);
     if (success) {
-      save_valuation(val_hash, valuation_file);
+      save_valuation(val_hash, valuation_file, crashed);
     }
   }
 }
@@ -3408,7 +3387,7 @@ static void perform_dry_run(char** argv) {
 
         if (q == queue) check_map_coverage();
 
-        get_valuation(argv, use_mem, q->len);
+        get_valuation(argv, use_mem, q->len, is_crashed());
 
         if (crash_mode) FATAL("Test case '%s' does *NOT* crash", fn);
 
@@ -3454,7 +3433,7 @@ static void perform_dry_run(char** argv) {
         }
 
       case FAULT_CRASH:
-        get_valuation(argv, use_mem, q->len);
+        get_valuation(argv, use_mem, q->len, is_crashed());
 
         if (crash_mode) break;
 
@@ -3856,7 +3835,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
   }
 
-  get_valuation(argv, mem, len);
+  get_valuation(argv, mem, len, is_crashed());
 
   switch (fault) {
 

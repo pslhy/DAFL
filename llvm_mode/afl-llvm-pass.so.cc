@@ -59,6 +59,8 @@ bool dfg_scoring = false;
 bool no_filename_match = false;
 std::set<std::string> instr_targets;
 std::map<std::string,std::pair<unsigned int,unsigned int>> dfg_node_map;
+unsigned int max_score = 0;
+std::string target_info;
 
 
 namespace {
@@ -105,6 +107,12 @@ void initDFGNodeMap(char* dfg_file) {
     std::string targ_line = line.substr(space_idx_2 + 1, std::string::npos);
     int dafl_score = stoi(dafl_score_str);
     dfg_node_map[targ_line] = std::make_pair(idx++, (unsigned int) dafl_score);
+
+    if (dafl_score > max_score) {
+      max_score = dafl_score;
+      target_info = targ_line;
+    }
+
     if (idx >= DFG_MAP_SIZE) {
       std::cout << "Input DFG is too large (check DFG_MAP_SIZE)" << std::endl;
       exit(1);
@@ -153,6 +161,10 @@ bool AFLCoverage::runOnModule(Module &M) {
   GlobalVariable *AFLMapDFGPtr =
       new GlobalVariable(M, PointerType::get(Int32Ty, 0), false,
                          GlobalValue::ExternalLinkage, 0, "__afl_area_dfg_ptr");
+
+  GlobalVariable *AFLMapHitPtr =
+      new GlobalVariable(M, PointerType::get(Int8Ty, 0), false,
+                         GlobalValue::ExternalLinkage, 0, "__afl_area_target_hit_ptr");
 
   GlobalVariable *AFLPrevLoc = new GlobalVariable(
       M, Int32Ty, false, GlobalValue::ExternalLinkage, 0, "__afl_prev_loc",
@@ -208,6 +220,7 @@ bool AFLCoverage::runOnModule(Module &M) {
       bool is_dfg_node = false;
       unsigned int node_idx = 0;
       unsigned int node_score = 0;
+      bool is_target_node = false;
 
       if (is_inst_targ) {
         inst_blocks++;
@@ -229,6 +242,9 @@ bool AFLCoverage::runOnModule(Module &M) {
             std::ostringstream stream;
             stream << file_name << ":" << line_no;
             std::string targ_str = stream.str();
+            if (targ_str.compare(target_info) == 0) {
+              is_target_node = true;
+            }
             if (dfg_node_map.count(targ_str) > 0) {
               is_dfg_node = true;
               auto node_info = dfg_node_map[targ_str];
@@ -241,8 +257,24 @@ bool AFLCoverage::runOnModule(Module &M) {
         }
       } // If disabled, we don't have to do anything here.
 
+      if (is_target_node) {
+        BasicBlock::iterator IP1 = BB.begin();  
+        IRBuilder<> IRB1(&(*IP1));
+
+        StoreInst *Store =
+            IRB1.CreateStore(ConstantInt::get(Int8Ty, 1), AFLMapHitPtr);
+        Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+      }
+
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
       IRBuilder<> IRB(&(*IP));
+
+      if (is_target_node) {
+        StoreInst *Store =
+            IRB1.CreateStore(ConstantInt::get(Int8Ty, 0), AFLMapHitPtr);
+        Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+      }
+
 
       /* Make up cur_loc */
 
