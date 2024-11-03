@@ -1657,6 +1657,7 @@ static void remove_shm(void) {
 
   shmctl(shm_id, IPC_RMID, NULL);
   shmctl(shm_id_dfg, IPC_RMID, NULL);
+  shmctl(shm_id_hit, IPC_RMID, NULL);
 
 }
 
@@ -2761,6 +2762,7 @@ static u8 run_target(char** argv, u32 timeout, char* env_opt, u8 force_dumbmode)
 
   memset(trace_bits, 0, MAP_SIZE);
   memset(dfg_bits, 0, sizeof(u32) * DFG_MAP_SIZE);
+  memset(target_hit, 0, sizeof(u8));
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
