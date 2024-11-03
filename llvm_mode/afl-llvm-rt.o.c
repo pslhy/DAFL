@@ -61,7 +61,7 @@ u8  __afl_area_initial[MAP_SIZE];
 u8* __afl_area_ptr = __afl_area_initial;
 
 u8 __afl_area_target_hit[1];
-u8* __afl_area_target_hit_ptr = &__afl_area_target_hit;
+u8* __afl_area_target_hit_ptr = __afl_area_target_hit;
 
 u32  __afl_area_initial_dfg[DFG_MAP_SIZE];
 u32* __afl_area_dfg_ptr = __afl_area_initial_dfg;
