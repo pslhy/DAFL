@@ -975,7 +975,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
     first_unhandled = NULL;
 
     // Special case handling when we have to insert at the front.
-    if (queue->diverse_score < q->diverse_score) {
+    if ( (pacfuzz_mode && queue->diverse_score < q->diverse_score) || (!pacfuzz_mode && queue->prox_score < q->prox_score) ) {
       q->next = queue;
       queue = q;
       is_inserted = 1;
@@ -997,7 +997,10 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
       if (!is_inserted) {
         // If reached the end or found the proper position, insert there.
-        if (!q_probe->next || q_probe->next->diverse_score < q->diverse_score) {
+        if (!q_probe->next || 
+            (pacfuzz_mode && q_probe->next->diverse_score < q->diverse_score) || 
+            (!pacfuzz_mode && q_probe->next->prox_score < q->prox_score)
+          ) {
           q->next = q_probe->next;
           q_probe->next = q;
           is_inserted = 1;
@@ -3126,13 +3129,15 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   q->bitmap_size = count_bytes(trace_bits);
   q->prox_score  = compute_proximity_score();
   q->dfg_bits = dfg_bits;
-  q->diverse_score = compute_diversity_score(q);
-  update_dfg_node_cnt();
+  q->diverse_score = pacfuzz_mode ? compute_diversity_score(q) : 0;
+  if (pacfuzz_mode) update_dfg_node_cnt();
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
-  add_to_all_entries(q);
-  find_pareto_frontier(1);
+  if (pacfuzz_mode) {
+    add_to_all_entries(q);
+    find_pareto_frontier(1);
+  }
 
   total_bitmap_size += q->bitmap_size;
   total_bitmap_entries++;
@@ -8516,7 +8521,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QNc:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QPNc:")) > 0)
 
     switch (opt) {
 
@@ -8682,6 +8687,13 @@ int main(int argc, char** argv) {
 
         if (!mem_limit_given) mem_limit = MEM_LIMIT_QEMU;
 
+        break;
+
+      case 'P' /* PacFuzz mode */:
+
+        if (pacfuzz_mode) FATAL("Multiple -P options not supported");
+        LOGF("[PacFuzz] PacFuzz mode enabled");
+        pacfuzz_mode = 1;
         break;
 
       case 'N': /* Do not perform DFG-based seed scheduling */
@@ -8871,7 +8883,7 @@ int main(int argc, char** argv) {
     if (stop_soon) break;
 
     // PacFuzz: We will keep DAFL queue handling for later use.
-    if (0) {
+    if (!pacfuzz_mode) {
       if (first_unhandled) { // This is set only when a new item was added.
         queue_cur = first_unhandled;
         first_unhandled = NULL;
