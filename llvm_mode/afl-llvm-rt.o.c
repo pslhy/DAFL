@@ -242,7 +242,6 @@ int __afl_persistent_loop(unsigned int max_cnt) {
 
       __afl_area_ptr = __afl_area_initial;
       __afl_area_dfg_ptr = __afl_area_initial_dfg;
-      *__afl_area_target_hit_ptr = 0;
 
     }
 
