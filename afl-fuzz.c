@@ -3248,6 +3248,7 @@ static u32 hash_file(u8 *filename) {
    If the valuation is for non-crashed, the file ends with "Passed" */
 
 static u8 is_crashed() {
+  LOGF("[PacFuzz] [is_crashed %s] [time %llu]\n", *target_hit ? "crashed" : "non-crashed", get_cur_time() - start_time);
   return *target_hit;
 }
 
