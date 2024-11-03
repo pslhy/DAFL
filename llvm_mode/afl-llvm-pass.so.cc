@@ -267,18 +267,24 @@ bool AFLCoverage::runOnModule(Module &M) {
 
         OKF("Instrumented at target node: %s", target_info.c_str());
 
-        StoreInst *Store =
-            IRB1.CreateStore(ConstantInt::get(Int8Ty, 1), AFLMapHitPtr);
-        Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        LoadInst *HitMap = IRB1.CreateLoad(AFLMapHitPtr);
+        HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
+        Value *HitMapMapPtrIdx = IRB1.CreateGEP(HitMap, Idx);
+        IRB1.CreateStore(ConstantInt::get(Int8Ty, 2), HitMapMapPtrIdx)
+            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
       }
 
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
       IRBuilder<> IRB(&(*IP));
 
       if (is_target_node) {
-        StoreInst *Store =
-            IRB.CreateStore(ConstantInt::get(Int8Ty, 2), AFLMapHitPtr);
-        Store->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        LoadInst *HitMap = IRB.CreateLoad(AFLMapHitPtr);
+        HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
+        Value *HitMapMapPtrIdx = IRB.CreateGEP(HitMap, Idx);
+        IRB.CreateStore(ConstantInt::get(Int8Ty, 2), HitMapMapPtrIdx)
+            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
       }
 
 
