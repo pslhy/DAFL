@@ -271,7 +271,7 @@ bool AFLCoverage::runOnModule(Module &M) {
         HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
         ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
         Value *HitMapMapPtrIdx = IRB1.CreateGEP(HitMap, Idx);
-        IRB1.CreateStore(ConstantInt::get(Int8Ty, 2), HitMapMapPtrIdx)
+        IRB1.CreateStore(ConstantInt::get(Int8Ty, 1), HitMapMapPtrIdx)
             ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
       }
 
@@ -283,7 +283,7 @@ bool AFLCoverage::runOnModule(Module &M) {
         HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
         ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
         Value *HitMapMapPtrIdx = IRB.CreateGEP(HitMap, Idx);
-        IRB.CreateStore(ConstantInt::get(Int8Ty, 2), HitMapMapPtrIdx)
+        IRB.CreateStore(ConstantInt::get(Int8Ty, 0), HitMapMapPtrIdx)
             ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
       }
 
