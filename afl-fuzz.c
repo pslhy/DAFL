@@ -139,8 +139,7 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            persistent_mode,           /* Running in persistent mode?      */
            deferred_mode,             /* Deferred forkserver mode?        */
            fast_cal,                  /* Try to calibrate faster?         */
-           pacfuzz_mode,              /* PACFuzz mode                     */
-           vertical_type;             /* 1 for even, 2 for original       */
+           fuzz_strategy;             /* PACFuzz strategy                 */
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
@@ -268,6 +267,7 @@ struct queue_entry {
       favored,                        /* Currently favored?               */
       fs_redundant,                   /* Marked as redundant in the fs?   */
       pareto_used;                    /* Used in pareto frontier?         */
+      pool_used;                      /* Used in vertical fuzzing?        */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       exec_cksum;                     /* Checksum of the execution trace  */
@@ -401,6 +401,14 @@ enum {
   /* 04 */ FAULT_NOINST,
   /* 05 */ FAULT_NOBITS
 };
+
+/* Fuzzing strategy codes */
+enum {
+  /* 00 */ FUZZ_DAFL,
+  /* 01 */ FUZZ_HORIZONTAL_ONLY,
+  /* 02 */ FUZZ_VERTICAL_SORTED,
+  /* 03 */ FUZZ_VERTICAL_EVENLY,
+}
 
 static u8* fault_str[6] = { "NONE", "TMOUT", "CRASH", "ERROR", "NOINST", "NOBITS" };
 
@@ -977,7 +985,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
     first_unhandled = NULL;
 
     // Special case handling when we have to insert at the front.
-    if ( (pacfuzz_mode && queue->diverse_score < q->diverse_score) || (!pacfuzz_mode && queue->prox_score < q->prox_score) ) {
+    if ( (fuzz_strategy && queue->diverse_score < q->diverse_score) || (!fuzz_strategy && queue->prox_score < q->prox_score) ) {
       q->next = queue;
       queue = q;
       is_inserted = 1;
@@ -1000,8 +1008,8 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
       if (!is_inserted) {
         // If reached the end or found the proper position, insert there.
         if (!q_probe->next || 
-            (pacfuzz_mode && q_probe->next->diverse_score < q->diverse_score) || 
-            (!pacfuzz_mode && q_probe->next->prox_score < q->prox_score)
+            (fuzz_strategy && q_probe->next->diverse_score < q->diverse_score) || 
+            (!fuzz_strategy && q_probe->next->prox_score < q->prox_score)
           ) {
           q->next = q_probe->next;
           q_probe->next = q;
@@ -1488,6 +1496,19 @@ static void find_pareto_frontier(u8 only_new) {
   pareto_size = new_frontier_size;
   LOGF("[PacFuzz] [pareto] head :: diversity score %llu / proximity score %llu / entry_id %d\n", frontier->diverse_score, frontier->prox_score, frontier->entry_id);
   LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier updated with %d entries\n", get_cur_time() - start_time, pareto_size);
+}
+
+static struct queue_entry* select_next_entry() {
+  switch (fuzz_strategy) {
+    case FUZZ_DAFL:
+      break;
+    case FUZZ_HORIZONTAL_ONLY:
+      break;
+    case FUZZ_VERTICAL_SORTED:
+      break;
+    case FUZZ_VERTICAL_EVENLY:
+      break;
+  }
 }
 
 /* Destructively simplify trace by eliminating hit count information
@@ -3140,12 +3161,12 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   q->bitmap_size = count_bytes(trace_bits);
   q->prox_score  = compute_proximity_score();
   q->dfg_bits = dfg_bits;
-  q->diverse_score = pacfuzz_mode ? compute_diversity_score(q) : 0;
-  if (pacfuzz_mode) update_dfg_node_cnt();
+  q->diverse_score = fuzz_strategy ? compute_diversity_score(q) : 0;
+  if (fuzz_strategy) update_dfg_node_cnt();
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
-  if (pacfuzz_mode) {
+  if (fuzz_strategy) {
     add_to_all_entries(q);
     find_pareto_frontier(1);
   }
@@ -3840,6 +3861,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   }
 
   get_valuation(argv, mem, len, is_crashed());
+  // is_new_valuation(); <- add_to_pathpool()
+  // is_vertical - global variable
 
   switch (fault) {
 
@@ -8504,7 +8527,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:dnCB:S:M:x:QPNc:")) > 0)
+  while ((opt = getopt(argc, argv, "+i:o:f:m:t:T:v:s:dnCB:S:M:x:QNc:")) > 0)
 
     switch (opt) {
 
@@ -8672,11 +8695,15 @@ int main(int argc, char** argv) {
 
         break;
 
-      case 'P' /* PacFuzz mode */:
+      case 'v': /* horizontal time */
+        horizontal_time = atoi(optarg);
+        break;
 
-        if (pacfuzz_mode) FATAL("Multiple -P options not supported");
-        LOGF("[PacFuzz] PacFuzz mode enabled");
-        pacfuzz_mode = 1;
+      case 's': /* Fuzzing strategy */
+        if (optarg[0] == 'h') fuzz_strategy = FUZZ_HORIZONTAL_ONLY;
+        else if (optarg[0] == 'v') fuzz_strategy = FUZZ_VERTICAL_SORTED;
+        else if (optarg[0] == 'e') fuzz_strategy = FUZZ_VERTICAL_EVENLY;
+        else fuzz_strategy = FUZZ_DAFL;
         break;
 
       case 'N': /* Do not perform DFG-based seed scheduling */
@@ -8866,7 +8893,7 @@ int main(int argc, char** argv) {
     if (stop_soon) break;
 
     // PacFuzz: We will keep DAFL queue handling for later use.
-    if (!pacfuzz_mode) {
+    if (!fuzz_strategy) {
       if (first_unhandled) { // This is set only when a new item was added.
         queue_cur = first_unhandled;
         first_unhandled = NULL;
@@ -8892,6 +8919,8 @@ int main(int argc, char** argv) {
 
       // If pareto frontier is not empty then choose the first item.
       // Pop it and set it as the current item.
+
+      // select_next_entry() <- pop_pareto_frontier() or pop_pathpool()
       queue_cur = pop_pareto_frontier();
       LOGF("[PacFuzz] [seed select] queue_cur: %d, prox score: %llu, diverse score: %llu\n", queue_cur->entry_id, queue_cur->prox_score, queue_cur->diverse_score);
     }
