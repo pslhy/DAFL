@@ -266,14 +266,14 @@ struct queue_entry {
       var_behavior,                   /* Variable behavior?               */
       favored,                        /* Currently favored?               */
       fs_redundant,                   /* Marked as redundant in the fs?   */
-      pareto_used;                    /* Used in pareto frontier?         */
+      pareto_used,                    /* Used in pareto frontier?         */
       pool_used;                      /* Used in vertical fuzzing?        */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       exec_cksum;                     /* Checksum of the execution trace  */
 
   u64 prox_score;                     /* Proximity score of the test case */
-  double diverse_score;                  /* Diversity score of the test case */
+  double diverse_score;               /* Diversity score of the test case */
   u32 entry_id;                       /* The ID assigned to the test case */
 
   u64 exec_us,                        /* Execution time (us)              */
