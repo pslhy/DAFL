@@ -43,6 +43,7 @@
 #include "alloc-inl.h"
 #include "hash.h"
 #include "uthash.h"
+#include "afl-fuzz.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -266,7 +267,7 @@ struct queue_entry {
       var_behavior,                   /* Variable behavior?               */
       favored,                        /* Currently favored?               */
       fs_redundant,                   /* Marked as redundant in the fs?   */
-      pareto_used;                    /* Used in pareto frontier?         */
+      pareto_used,                    /* Used in pareto frontier?         */
       pool_used;                      /* Used in vertical fuzzing?        */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
@@ -353,6 +354,8 @@ struct hash_entry {
 static struct hash_entry *dfg_hash = NULL;    /* Hash map for DFG usage           */
 static struct hash_entry *memval_hash = NULL; /* Hash map for memory values       */
 
+static struct vertical_manager *vertical_manager = NULL;
+
 static u8* (*post_handler)(u8* buf, u32* len);
 
 /* Interesting values, as per config.h */
@@ -408,7 +411,7 @@ enum {
   /* 01 */ FUZZ_HORIZONTAL_ONLY,
   /* 02 */ FUZZ_VERTICAL_SORTED,
   /* 03 */ FUZZ_VERTICAL_EVENLY,
-}
+};
 
 static u8* fault_str[6] = { "NONE", "TMOUT", "CRASH", "ERROR", "NOINST", "NOBITS" };
 
@@ -1498,17 +1501,239 @@ static void find_pareto_frontier(u8 only_new) {
   LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier updated with %d entries\n", get_cur_time() - start_time, pareto_size);
 }
 
-static struct queue_entry* select_next_entry() {
-  switch (fuzz_strategy) {
-    case FUZZ_DAFL:
-      break;
-    case FUZZ_HORIZONTAL_ONLY:
-      break;
-    case FUZZ_VERTICAL_SORTED:
-      break;
-    case FUZZ_VERTICAL_EVENLY:
-      break;
+// Begin vertical navigation stuff
+struct vertical_entry *vertical_entry_create(u32 hash) {
+  struct vertical_entry *entry = ck_alloc(sizeof(struct vertical_entry));
+  entry->hash = hash;
+  entry->use_count = 0;
+  entry->entries = vector_create();
+  entry->old_entries = vector_create();
+  entry->next = NULL;
+  entry->value_map = hashmap_create(8);
+  return entry;
+}
+
+// For FUZZ_VERTICAL_SORTED
+void vertical_entry_sorted_insert(struct vertical_manager *manager, struct vertical_entry *entry, u8 update) {
+  if (entry == NULL)
+    return;
+  if (update)
+    LOGF("[vert-entry] [insert] [entry %u] [vals %u] [entries %u]\n", entry->hash, hashmap_size(entry->value_map), vector_size(entry->entries) + vector_size(entry->old_entries));
+  struct vertical_entry *cur = manager->head;
+  if (!cur) {
+    manager->head = entry;
+    entry->next = NULL;
+    return;
   }
+  // Only 1 entry in list
+  if (manager->head == entry && entry->next == NULL) return;
+  
+  cur = manager->head;
+  if (hashmap_size(entry->value_map) < hashmap_size(cur->value_map)) {
+    // Insert at the head
+    entry->next = cur;
+    manager->head = entry;
+    return;
+  }
+  // First, remove the entry from the list
+  u32 count = 0;
+  struct vertical_entry *prev = NULL;
+  while (cur) {
+    if (cur == entry) {
+      if (prev) {
+        prev->next = cur->next;
+      } else {
+        manager->head = cur->next;
+      }
+      entry->next = NULL;
+      break;
+    }
+    prev = cur;
+    cur = cur->next;
+    count++;
+  }
+  // Then, insert the entry to the list
+  cur = manager->head;
+  while (cur) {
+    if (cur->next == NULL) {
+      // This entry is the largest: insert at the end
+      cur->next = entry;
+      entry->next = NULL;
+      if (hashmap_size(entry->value_map) < hashmap_size(cur->value_map)) {
+        LOGF("[error] [vert-entry] [insert] [error] [entry %u] [vals %u] [entries %u] [cur %u] [cur-vals %u] [cur-entries %u]\n", entry->hash, hashmap_size(entry->value_map), vector_size(entry->entries) + vector_size(entry->old_entries), cur->hash, hashmap_size(cur->value_map), vector_size(cur->entries) + vector_size(cur->old_entries));
+      }
+      break;
+    } else if (hashmap_size(entry->value_map) < hashmap_size(cur->next->value_map)) {
+      // Insert to proper position
+      entry->next = cur->next;
+      cur->next = entry;
+      break;
+    }
+    cur = cur->next;
+  }
+}
+
+void vertical_entry_add(struct vertical_manager *manager, struct vertical_entry *entry, struct queue_entry *q, struct key_value_pair *kvp) {
+  if (q != NULL) push_back(entry->entries, q);
+  if (fuzz_strategy == FUZZ_VERTICAL_SORTED) {
+    // Insert the entry to the sorted list only if it found new valuation
+    u32 size = vector_size(entry->entries) + vector_size(entry->old_entries);
+    if ((!kvp && size > 0) || (size == 1 && q)) vertical_entry_sorted_insert(manager, entry, 1);
+  } else if (q != NULL) { // FUZZ_VERTICAL_EVENLY
+    if (vector_size(entry->entries) == 1) {
+      entry->next = manager->head;
+      manager->head = entry;
+    }
+  }
+}
+
+struct vertical_manager *vertical_manager_create() {
+  struct vertical_manager *manager = ck_alloc(sizeof(struct vertical_manager));
+  manager->map = hashmap_create(4096);
+  manager->head = NULL;
+  manager->old = NULL;
+  manager->tree = NULL; // interval_tree_create();
+
+  manager->prev_time = get_cur_time();
+  manager->dynamic_mode = 0;
+  manager->use_vertical = 0;
+  return manager;
+}
+
+void vertical_manager_free(struct vertical_manager *manager) {
+  if (manager == NULL) return;
+  hashmap_free(manager->map);
+  struct vertical_entry *entry = manager->head;
+  while (entry != NULL) {
+    struct vertical_entry *next = entry->next;
+    vector_free(entry->entries);
+    hashmap_free(entry->value_map);
+    ck_free(entry);
+    entry = next;
+  }
+  entry = manager->old;
+  while (entry != NULL) {
+    struct vertical_entry *next = entry->next;
+    vector_free(entry->entries);
+    hashmap_free(entry->value_map);
+    ck_free(entry);
+    entry = next;
+  }
+  // interval_tree_free(manager->tree);
+  ck_free(manager);
+}
+
+struct vertical_entry *vertical_manager_select_entry(struct vertical_manager *manager) {
+  if (manager->head == NULL && manager->old == NULL) return NULL;
+  // Pop from head
+  struct vertical_entry *entry = manager->head;
+  if (fuzz_strategy == FUZZ_VERTICAL_SORTED) {
+    // Do not move the entry to the old queue...
+    manager->head = entry->next;
+    entry->use_count++;
+    entry->next = NULL;
+    vertical_entry_sorted_insert(manager, entry, 0);
+    LOGF("[vert-entry] [sel] [selected %u] [vals %u] [entries %u]\n", entry ? entry->hash : -1, entry ? hashmap_size(entry->value_map) : 0, entry ? vector_size(entry->entries) + vector_size(entry->old_entries) : 0);
+    return entry;
+  }
+  if (entry) {
+    manager->head = entry->next;
+    entry->use_count++;
+    entry->next = NULL;
+  } else {
+    // Pop from old
+    entry = manager->old;
+    manager->old = NULL;
+    if (entry == NULL) { // Is this possible?
+      LOGF("[error] [vert-entry] [no-entries]\n");
+      return NULL;
+    }
+    manager->head = entry->next;
+    entry->use_count++;
+    entry->next = NULL;
+  }
+  return entry;
+}
+
+enum VerticalMode vertical_manager_select_mode(struct vertical_manager *manager) {
+  enum VerticalMode initial_mode = M_HOR;
+  if (!manager->dynamic_mode) {
+    if (get_cur_time() - start_time < horizontal_time * 1000) {
+      manager->use_vertical = 0;
+    } else {
+      manager->dynamic_mode = 1;
+    }
+  }
+  if (get_cur_time() - manager->prev_time > 60 * 1000) {
+    if (manager->dynamic_mode) { // Alternate between horizontal and vertical
+      manager->use_vertical = !manager->use_vertical;
+      manager->prev_time = get_cur_time();
+    }
+  } // Else: Selected entry from previous mode was rejected -> Use the same mode
+  return manager->use_vertical ? M_VER : M_HOR;
+}
+
+enum VerticalMode vertical_manager_get_mode(struct vertical_manager *manager) {
+  return manager->use_vertical ? M_VER : M_HOR;
+}
+
+void vertical_manager_insert_to_old(struct vertical_manager *manager, struct vertical_entry *entry, struct queue_entry *q) {
+  if (fuzz_strategy == FUZZ_VERTICAL_EVENLY) {
+    if (manager->old == NULL) {
+      manager->old = entry;
+    } else {
+      struct vertical_entry *ve = manager->old;
+      while (ve->next != NULL) {
+        ve = ve->next;
+      }
+      ve->next = entry;
+    }
+  }
+  push_back(entry->old_entries, q);
+}
+
+static struct queue_entry* select_next_entry_vertical() {
+  // First, select dfg path (vertical_entry)
+  struct vertical_entry *entry = vertical_manager_select_entry(vertical_manager);
+  struct queue_entry* q = NULL;
+  if (!entry) return NULL;
+
+  // Then, select the seed from the selected dfg path
+  if (vector_size(entry->entries) == 0) {
+    // Recycle the old entries
+    u32 size = vector_size(entry->old_entries);
+    for (u32 i = 0; i < size; i++) {
+      struct queue_entry *old_q = vector_get(entry->old_entries, size - 1 - i);
+      push_back(entry->entries, old_q);
+    }
+    vector_clear(entry->old_entries);
+  }
+  q = vector_pop_back(entry->entries);
+
+  // push back to the old queue for recycling
+  vertical_manager_insert_to_old(vertical_manager, entry, q);
+  LOGF("[sel] [vertical] [id %d] [dfg-path %u] [time %llu]\n", q ? q->entry_id : -1, entry->hash, get_cur_time() - start_time);
+  return q;
+}
+
+// End vertical navigation stuff
+
+static struct queue_entry* select_next_entry() {
+  struct queue_entry *selected = NULL;
+  switch (fuzz_strategy) {
+  case FUZZ_DAFL:
+    break;
+  case FUZZ_HORIZONTAL_ONLY:
+    break;
+  case FUZZ_VERTICAL_SORTED: // fall-through
+  case FUZZ_VERTICAL_EVENLY:
+    selected = select_next_entry_vertical();
+    break;
+  }
+  if (selected == NULL) {
+    selected = queue; // TODO: Fall back to horizontal
+  }
+  return selected;
 }
 
 /* Destructively simplify trace by eliminating hit count information
@@ -8775,6 +9000,8 @@ int main(int argc, char** argv) {
 
   save_cmdline(argc, argv);
 
+  vertical_manager = vertical_manager_create();
+
   fix_up_banner(argv[optind]);
 
   check_if_tty();
@@ -8966,6 +9193,7 @@ stop_fuzzing:
   ck_free(sync_id);
   free_memval_hash();
   free_dfg_hash();
+  vertical_manager_free(vertical_manager);
 
   alloc_report();
 
