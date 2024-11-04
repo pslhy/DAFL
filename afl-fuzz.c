@@ -408,7 +408,7 @@ enum {
   /* 01 */ FUZZ_HORIZONTAL_ONLY,
   /* 02 */ FUZZ_VERTICAL_SORTED,
   /* 03 */ FUZZ_VERTICAL_EVENLY,
-}
+};
 
 static u8* fault_str[6] = { "NONE", "TMOUT", "CRASH", "ERROR", "NOINST", "NOBITS" };
 
@@ -1509,11 +1509,11 @@ static void find_pareto_frontier(u8 only_new) {
   }
 
   pareto_size = new_frontier_size;
-  LOGF("[PacFuzz] [pareto] head :: diversity score %llu / proximity score %lf / entry_id %d\n", frontier->diverse_score, frontier->prox_score, frontier->entry_id);
+  LOGF("[PacFuzz] [pareto] head :: diversity score %lf / proximity score %llu / entry_id %d\n", frontier->diverse_score, frontier->prox_score, frontier->entry_id);
   LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier updated with %d entries\n", get_cur_time() - start_time, pareto_size);
 }
 
-static struct void select_next_entry() {
+static void select_next_entry() {
   switch (fuzz_strategy) {
     case FUZZ_DAFL:
       if (first_unhandled) { // This is set only when a new item was added.
@@ -2806,7 +2806,7 @@ static u8 run_valuation_binary(char** argv, u32 timeout, char* env_opt) {
   static u64 exec_ms = 0;
 
   int status = 0;
-  u32 tb4;
+  u8 is_run_failed;
 
   child_timed_out = 0;
   child_pid = fork();
@@ -2880,6 +2880,7 @@ static u8 run_valuation_binary(char** argv, u32 timeout, char* env_opt) {
          falling through. */
 
       LOGF("[PacFuzz] [run_valuation_binary] execv() failed\n");
+      is_run_failed = 1;
       exit(0);
     }
 
@@ -2929,7 +2930,7 @@ static u8 run_valuation_binary(char** argv, u32 timeout, char* env_opt) {
     return FAULT_CRASH;
   }
 
-  if ((force_dumbmode == 1  || dumb_mode == 1 || no_forkserver) && tb4 == EXEC_FAIL_SIG)
+  if (is_run_failed)
     return FAULT_ERROR;
 
   /* It makes sense to account for the slowest units only if the testcase was run
