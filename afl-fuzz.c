@@ -1344,6 +1344,7 @@ static u64 recompute_proximity_score(struct queue_entry* q) {
 
   u64 prox_score = 0;
   u32 i = DFG_MAP_SIZE;
+  u32 cover_cnt = 0;
 
   while (i--) {
     if (q->dfg_bits[i] > 0) {
