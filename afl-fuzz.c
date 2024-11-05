@@ -109,7 +109,7 @@ EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
 EXP_ST u32 exec_tmout = EXEC_TIMEOUT; /* Configurable exec timeout (ms)   */
 static u32 hang_tmout = EXEC_TIMEOUT; /* Timeout used for hang det (ms)   */
 
-EXP_ST u32 horizontal_time = 60;      /* Horizontal fuzzing time (sec)    */
+EXP_ST u32 horizontal_time = 60;      /* Horizontal fuzzing time (min)    */
 
 EXP_ST u64 mem_limit  = MEM_LIMIT;    /* Memory cap for child (MB)        */
 
@@ -1696,7 +1696,7 @@ struct vertical_entry *vertical_manager_select_entry(struct vertical_manager *ma
 enum VerticalMode vertical_manager_select_mode(struct vertical_manager *manager) {
   enum VerticalMode initial_mode = M_HOR;
   if (!manager->dynamic_mode) {
-    if (get_cur_time() - start_time < horizontal_time * 1000) {
+    if (get_cur_time() - start_time < horizontal_time * 60 * 1000) {
       manager->use_vertical = 0;
     } else {
       manager->dynamic_mode = 1;
