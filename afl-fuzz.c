@@ -3345,7 +3345,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     memcpy(q->dfg_bits, dfg_bits, sizeof(u32) * DFG_MAP_SIZE);
   }
   q->prox_score  = recompute_proximity_score(q);
-  q->dfg_sparse = get_dfg_sparse(q);
+  q->dfg_sparse = fuzz_strategy ? get_dfg_sparse(q) : NULL;
   q->diverse_score = fuzz_strategy ? compute_diversity_score(q) : 0;
   q->handicap    = handicap;
   q->cal_failed  = 0;
