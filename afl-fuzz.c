@@ -1362,7 +1362,7 @@ static u32* get_dfg_sparse(struct queue_entry* q) {
   u32 i = DFG_MAP_SIZE;
   u32 j = 0;
 
-  u32* dfg_sparse = ck_alloc(q->coverage_size * 2 * sizeof(u32));
+  u32* dfg_sparse = ck_alloc((q->coverage_size + 1) * 2 * sizeof(u32));
 
   while (i--) {
     if (q->dfg_bits[i] > 0) {
