@@ -3456,7 +3456,7 @@ static u32 hash_file(u8 *filename) {
 
 static u8 is_crashed_at_target_loc() {
   // LOGF("[PacFuzz] [is_crashed %d] [time %llu]\n", target_hit[0], get_cur_time() - start_time);
-  return target_hit[0] == 0;
+  return target_hit[0] == 1;
 }
 
 /* PacFuzz: save valuation function */
