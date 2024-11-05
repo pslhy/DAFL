@@ -268,7 +268,8 @@ struct queue_entry {
       favored,                        /* Currently favored?               */
       fs_redundant,                   /* Marked as redundant in the fs?   */
       pareto_used,                    /* Used in pareto frontier?         */
-      pool_used;                      /* Used in vertical fuzzing?        */
+      pool_used,                      /* Used in vertical fuzzing?        */
+      div_first;                      /* First in diversity calculation?  */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       exec_cksum;                     /* Checksum of the execution trace  */
@@ -1379,6 +1380,12 @@ static u64 compute_diversity_score(struct queue_entry* q) {
 
   double div_score = 0;
   u32 i = DFG_MAP_SIZE;
+
+  if(q->div_first != 0) {
+    return q->diverse_score;
+  }
+
+  q->div_first = 1;
 
   while (i--) {
     if (q->dfg_bits[i] > 0) {
@@ -3685,7 +3692,7 @@ static u32 hash_file(u8 *filename) {
 
 static u8 is_crashed_at_target_loc() {
   // LOGF("[PacFuzz] [is_crashed %d] [time %llu]\n", target_hit[0], get_cur_time() - start_time);
-  return target_hit[0] == 0;
+  return target_hit[0] == 1;
 }
 
 /* PacFuzz: save valuation function */
@@ -4264,12 +4271,14 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
-    // PacFuzz: We update path count when we add entry to the queue.
-    if (fuzz_strategy) update_dfg_node_cnt();
     add_to_queue(fn, len, 0, prox_score, 0);
     queue_last->dfg_bits = dfg_bits;
-    // queue_last->diverse_score = compute_diversity_score(queue_last);
-    // update_dfg_node_cnt();
+
+    // PacFuzz: We update path count when we add entry to the queue.
+    if (fuzz_strategy) {
+      update_dfg_node_cnt();
+      queue_last->diverse_score = compute_diversity_score(queue_last);
+    }
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
