@@ -274,7 +274,7 @@ struct queue_entry {
       exec_cksum;                     /* Checksum of the execution trace  */
 
   u64 prox_score;                     /* Proximity score of the test case */
-  u64 diverse_score;                  /* Diversity score of the test case */
+  double diverse_score;               /* Diversity score of the test case */
   u32 entry_id;                       /* The ID assigned to the test case */
 
   u64 exec_us,                        /* Execution time (us)              */
@@ -1030,9 +1030,9 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
 /* Append new test case to the queue. */
 
-static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u64 diverse_score) {
+static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, double diverse_score) {
 
-  LOGF("[PacFuzz] [add_to_queue] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu, diverse_score: %llu\n", fname, len, passed_det, prox_score, diverse_score);
+  LOGF("[PacFuzz] [add_to_queue] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu, diverse_score: %lf\n", fname, len, passed_det, prox_score, diverse_score);
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -1467,12 +1467,27 @@ static struct queue_entry* pop_pareto_frontier() {
   return q;
 }
 
+static u8 is_entry_left() {
+  u8 unused = 0;
+  struct queue_entry* q = all_entries;
+
+  while(q != NULL) {
+    if (q->pareto_used == 0) {
+      unused = 1;
+      break;
+    }
+    q = q->snext;
+  }
+
+  return unused;
+}
+
 static void find_pareto_frontier(u8 only_new) {
   LOGF("[PacFuzz] [pareto] [time %llu] Finding Pareto frontier\n", get_cur_time() - start_time);
 
   int new_frontier_size = 0;
   frontier = NULL;
-  u64 max_diverse_score = 0;
+  double max_diverse_score = 0;
   
   struct queue_entry* q = all_entries;
   
@@ -1497,7 +1512,7 @@ static void find_pareto_frontier(u8 only_new) {
   }
 
   pareto_size = new_frontier_size;
-  LOGF("[PacFuzz] [pareto] head :: diversity score %llu / proximity score %llu / entry_id %d\n", frontier->diverse_score, frontier->prox_score, frontier->entry_id);
+  LOGF("[PacFuzz] [pareto] head :: diversity score %lf / proximity score %llu / entry_id %d\n", frontier->diverse_score, frontier->prox_score, frontier->entry_id);
   LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier updated with %d entries\n", get_cur_time() - start_time, pareto_size);
 }
 
@@ -1718,22 +1733,48 @@ static struct queue_entry* select_next_entry_vertical() {
 
 // End vertical navigation stuff
 
-static struct queue_entry* select_next_entry() {
-  struct queue_entry *selected = NULL;
+static void select_next_entry() {
   switch (fuzz_strategy) {
-  case FUZZ_DAFL:
-    break;
-  case FUZZ_HORIZONTAL_ONLY:
-    break;
+    case FUZZ_DAFL:
+      if (first_unhandled) { // This is set only when a new item was added.
+        queue_cur = first_unhandled;
+        first_unhandled = NULL;
+      } else { // Proceed to the next unhandled item in the queue.
+        while (queue_cur && queue_cur->handled_in_cycle)
+          queue_cur = queue_cur->next;
+      }
+      LOGF("[DAFL] [seed select] queue_cur: %d, prox score: %llu, diverse score: %lf\n", queue_cur->entry_id, queue_cur->prox_score, queue_cur->diverse_score);
+      break;
+    case FUZZ_HORIZONTAL_ONLY:
+      queue_cur = NULL;
+      // If pareto frontier is empty and recycled queue is empty then error.
+      if (frontier == NULL && all_entries == NULL) {
+        WARNF("[PacFuzz] [err] [seed select] pareto and recycled queue are empty.");
+      }
+      // If recycled queue is not empty then re-calculate the pareto frontier.
+      if (frontier == NULL && !is_entry_left()) {
+        LOGF("[PacFuzz] [seed select] queue recycled.\n");
+        find_pareto_frontier(0);
+      } else {
+        find_pareto_frontier(1);
+      }
+
+      queue_cur = pop_pareto_frontier();
+      LOGF("[PacFuzz] [seed select] queue_cur: %d, prox score: %llu, diverse score: %lf\n", queue_cur->entry_id, queue_cur->prox_score, queue_cur->diverse_score);
   case FUZZ_VERTICAL_SORTED: // fall-through
   case FUZZ_VERTICAL_EVENLY:
-    selected = select_next_entry_vertical();
+    queue_cur = select_next_entry_vertical();
     break;
   }
-  if (selected == NULL) {
-    selected = queue; // TODO: Fall back to horizontal
+  if (queue_cur == NULL) { // If no seed is selected, then select the first seed in the queue.
+      if (first_unhandled) { // This is set only when a new item was added.
+        queue_cur = first_unhandled;
+        first_unhandled = NULL;
+      } else { // Proceed to the next unhandled item in the queue.
+        while (queue_cur && queue_cur->handled_in_cycle)
+          queue_cur = queue_cur->next;
+      }
   }
-  return selected;
 }
 
 /* Destructively simplify trace by eliminating hit count information
@@ -2982,6 +3023,155 @@ EXP_ST void init_forkserver(char** argv) {
 
 }
 
+/* PacFuzz : We implemented a new function that separated with run_target
+   to run the valuation binary. The reason is that we don't want shared memories
+   being affected by the valuation binary. So we removed everything related to
+   forkserver and shared memories. */
+
+static u8 run_valuation_binary(char** argv, u32 timeout, char* env_opt) {
+
+  static struct itimerval it;
+  static u32 prev_timed_out = 0;
+  static u64 exec_ms = 0;
+
+  int status = 0;
+  u8 is_run_failed;
+
+  child_timed_out = 0;
+  child_pid = fork();
+  
+  if (child_pid < 0) PFATAL("[PacFuzz] [run_valuation_binary] fork() failed");
+
+    if (!child_pid) {
+
+      struct rlimit r;
+
+      if (mem_limit) {
+
+        r.rlim_max = r.rlim_cur = ((rlim_t)mem_limit) << 20;
+
+#ifdef RLIMIT_AS
+
+        setrlimit(RLIMIT_AS, &r); /* Ignore errors */
+
+#else
+
+        setrlimit(RLIMIT_DATA, &r); /* Ignore errors */
+
+#endif /* ^RLIMIT_AS */
+
+      }
+
+      r.rlim_max = r.rlim_cur = 0;
+
+      setrlimit(RLIMIT_CORE, &r); /* Ignore errors */
+
+      /* Isolate the process and configure standard descriptors. If out_file is
+         specified, stdin is /dev/null; otherwise, out_fd is cloned instead. */
+
+      setsid();
+
+      dup2(dev_null_fd, 1);
+      dup2(dev_null_fd, 2);
+
+      if (out_file) {
+
+        dup2(dev_null_fd, 0);
+
+      } else {
+
+        dup2(out_fd, 0);
+        close(out_fd);
+
+      }
+
+      /* On Linux, would be faster to use O_CLOEXEC. Maybe TODO. */
+
+      close(dev_null_fd);
+      close(out_dir_fd);
+      close(dev_urandom_fd);
+      close(fileno(plot_file));
+
+      /* Set sane defaults for ASAN if nothing else specified. */
+
+      char *envp[] =
+      {
+          "ASAN_OPTIONS=abort_on_error=1:halt_on_error=1:detect_leaks=0:symbolize=0:allocator_may_return_null=1",
+          "MSAN_OPTIONS=exit_code=86:halt_on_error=1:symbolize=0:msan_track_origins=0",
+          "UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:exit_code=54:print_stacktrace=1",
+          env_opt,
+          0
+      };
+
+      execve(argv[0], argv, envp);
+
+      /* Use a distinctive bitmap value to tell the parent about execv()
+         falling through. */
+
+      LOGF("[PacFuzz] [run_valuation_binary] execv() failed\n");
+      is_run_failed = 1;
+      exit(0);
+    }
+
+  /* Configure timeout, as requested by user, then wait for child to terminate. */
+
+  it.it_value.tv_sec = (timeout / 1000);
+  it.it_value.tv_usec = (timeout % 1000) * 1000;
+
+  setitimer(ITIMER_REAL, &it, NULL);
+
+  /* The SIGALRM handler simply kills the child_pid and sets child_timed_out. */
+
+  if (waitpid(child_pid, &status, 0) <= 0) PFATAL("[PacFuzz] [run_valuation_binary] waitpid() failed");
+
+  if (!WIFSTOPPED(status)) child_pid = 0;
+
+  getitimer(ITIMER_REAL, &it);
+  exec_ms = (u64) timeout - (it.it_value.tv_sec * 1000 +
+                             it.it_value.tv_usec / 1000);
+
+  it.it_value.tv_sec = 0;
+  it.it_value.tv_usec = 0;
+
+  setitimer(ITIMER_REAL, &it, NULL);
+
+  total_execs++;
+
+  prev_timed_out = child_timed_out;
+
+  /* Report outcome to caller. */
+
+  if (WIFSIGNALED(status) && !stop_soon) {
+
+    kill_signal = WTERMSIG(status);
+
+    if (child_timed_out && kill_signal == SIGKILL) return FAULT_TMOUT;
+
+    return FAULT_CRASH;
+
+  }
+
+  /* A somewhat nasty hack for MSAN, which doesn't support abort_on_error and
+     must use a special exit code. */
+
+  if (uses_asan && WEXITSTATUS(status) == MSAN_ERROR) {
+    kill_signal = 0;
+    return FAULT_CRASH;
+  }
+
+  if (is_run_failed)
+    return FAULT_ERROR;
+
+  /* It makes sense to account for the slowest units only if the testcase was run
+  under the user defined timeout. */
+  if (!(timeout > exec_tmout) && (slowest_exec_ms < exec_ms)) {
+    slowest_exec_ms = exec_ms;
+  }
+
+  return FAULT_NONE;
+
+}
+
 
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update trace_bits[]. */
@@ -3387,7 +3577,6 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   q->prox_score  = compute_proximity_score();
   q->dfg_bits = dfg_bits;
   q->diverse_score = fuzz_strategy ? compute_diversity_score(q) : 0;
-  if (fuzz_strategy) update_dfg_node_cnt();
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
@@ -3491,13 +3680,12 @@ static u32 hash_file(u8 *filename) {
 
 }
 
-/* PacFuzz: check memory valuation is for crashed or not 
-   If the valuation is for crashed, the file ends with "----------------------------"
-   If the valuation is for non-crashed, the file ends with "Passed" */
+/* PacFuzz: check whether crash point is hit
+   It uses shared memory to check whether the target point is hit */
 
-static u8 is_crashed() {
+static u8 is_crashed_at_target_loc() {
   // LOGF("[PacFuzz] [is_crashed %d] [time %llu]\n", target_hit[0], get_cur_time() - start_time);
-  return target_hit[0];
+  return target_hit[0] == 0;
 }
 
 /* PacFuzz: save valuation function */
@@ -3551,7 +3739,7 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
 
   tmp_argv1 = argv[0];
   argv[0] = valexe;
-  fault_tmp = run_target(argv, 10000, tmpfile_env, 1);
+  fault_tmp = run_valuation_binary(argv, 10000, tmpfile_env);
   argv[0] = tmp_argv1;
   ck_free(tmpfile_env);
 
@@ -3581,7 +3769,7 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
   return 1;
 }
 
-static void get_valuation(char** argv, u8* use_mem, u32 len, u8 crashed) {
+static u8 get_valuation(char** argv, u8* use_mem, u32 len, u8 crashed) {
   // Check current run is covering target line
   if (check_target_covered()) {
     LOGF("[PacFuzz] [get_valuation] [target-covered] [time %llu]\n", get_cur_time() - start_time);
@@ -3591,7 +3779,11 @@ static void get_valuation(char** argv, u8* use_mem, u32 len, u8 crashed) {
     if (success) {
       save_valuation(val_hash, valuation_file, crashed);
     }
+
+    return success;
   }
+
+  return 0;
 }
 
 /* Perform dry run of all test cases to confirm that the app is working as
@@ -3637,7 +3829,7 @@ static void perform_dry_run(char** argv) {
 
         if (q == queue) check_map_coverage();
 
-        get_valuation(argv, use_mem, q->len, is_crashed());
+        get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc());
 
         if (crash_mode) FATAL("Test case '%s' does *NOT* crash", fn);
 
@@ -3683,7 +3875,7 @@ static void perform_dry_run(char** argv) {
         }
 
       case FAULT_CRASH:
-        get_valuation(argv, use_mem, q->len, is_crashed());
+        get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc());
 
         if (crash_mode) break;
 
@@ -4028,15 +4220,31 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   s32 fd;
   u8  keeping = 0, res;
   u64 prox_score, div_score;
+  u8 has_unique_memval, save_to_queue = 0;
 
-  if (fault == crash_mode) {
+  has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc());
+  hnb = has_new_bits(virgin_bits);
+  save_to_queue = fault == crash_mode;
 
-    /* Keep only if there are new bits in the map, add to queue for
-       future fuzzing, etc. */
+  if(fuzz_strategy) {
+    save_to_queue = hnb || has_unique_memval;
+  }
+  // is_new_valuation(); <- add_to_pathpool()
+  // is_vertical - global variable
 
-    if (!(hnb = has_new_bits(virgin_bits))) {
-      if (crash_mode) total_crashes++;
-      return 0;
+
+
+  if (save_to_queue) {
+
+    // PacFuzz: We keep this branch for DAFL mode.
+    if (!fuzz_strategy) {
+      /* Keep only if there are new bits in the map, add to queue for
+        future fuzzing, etc. */
+
+      if (!hnb) {
+        if (crash_mode) total_crashes++;
+        return 0;
+      }
     }
 
     prox_score = compute_proximity_score();
@@ -4056,6 +4264,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
+    // PacFuzz: We update path count when we add entry to the queue.
+    if (fuzz_strategy) update_dfg_node_cnt();
     add_to_queue(fn, len, 0, prox_score, 0);
     queue_last->dfg_bits = dfg_bits;
     // queue_last->diverse_score = compute_diversity_score(queue_last);
@@ -4084,10 +4294,6 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     keeping = 1;
 
   }
-
-  get_valuation(argv, mem, len, is_crashed());
-  // is_new_valuation(); <- add_to_pathpool()
-  // is_vertical - global variable
 
   switch (fault) {
 
@@ -9120,37 +9326,7 @@ int main(int argc, char** argv) {
     if (stop_soon) break;
 
     // PacFuzz: We will keep DAFL queue handling for later use.
-    if (!fuzz_strategy) {
-      if (first_unhandled) { // This is set only when a new item was added.
-        queue_cur = first_unhandled;
-        first_unhandled = NULL;
-      } else { // Proceed to the next unhandled item in the queue.
-        while (queue_cur && queue_cur->handled_in_cycle)
-          queue_cur = queue_cur->next;
-      }
-    }
-    // PacFuzz: We will choose the next item to fuzz based on pareto frontier.
-    else {
-      queue_cur = NULL;
-      // If pareto frontier is empty and recycled queue is empty then error.
-      if (frontier == NULL && all_entries == NULL) {
-        WARNF("[PacFuzz] [err] [seed select] pareto and recycled queue are empty.");
-      }
-      // If recycled queue is not empty then re-calculate the pareto frontier.
-      if (frontier == NULL && all_entries != NULL) {
-        LOGF("[PacFuzz] [seed select] queue recycled.\n");
-        find_pareto_frontier(0);
-      } else {
-        find_pareto_frontier(1);
-      }
-
-      // If pareto frontier is not empty then choose the first item.
-      // Pop it and set it as the current item.
-
-      // select_next_entry() <- pop_pareto_frontier() or pop_pathpool()
-      queue_cur = pop_pareto_frontier();
-      LOGF("[PacFuzz] [seed select] queue_cur: %d, prox score: %llu, diverse score: %llu\n", queue_cur->entry_id, queue_cur->prox_score, queue_cur->diverse_score);
-    }
+    select_next_entry();
   }
 
   if (queue_cur) show_stats();

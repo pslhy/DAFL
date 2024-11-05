@@ -262,17 +262,26 @@ bool AFLCoverage::runOnModule(Module &M) {
       } // If disabled, we don't have to do anything here.
 
       if (is_target_node) {
-        BasicBlock::iterator IP1 = BB.begin();  
-        IRBuilder<> IRB1(&(*IP1));
-
-        OKF("Instrumented at target node: %s", target_info.c_str());
-
-        LoadInst *HitMap = IRB1.CreateLoad(AFLMapHitPtr);
-        HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-        ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
-        Value *HitMapMapPtrIdx = IRB1.CreateGEP(HitMap, Idx);
-        IRB1.CreateStore(ConstantInt::get(Int8Ty, 1), HitMapMapPtrIdx)
+        // Get terminator of target basic block
+        Instruction *terminator = BB.getTerminator();
+      
+        if (terminator) {
+          IRBuilder<> IRB1(terminator); 
+          LoadInst *HitMap = IRB1.CreateLoad(AFLMapHitPtr);
+          HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
+          Value *HitMapMapPtrIdx = IRB1.CreateGEP(HitMap, Idx);
+          IRB1.CreateStore(ConstantInt::get(Int8Ty, 1), HitMapMapPtrIdx)
             ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        } else {
+          IRBuilder<> IRB1(&BB);
+          LoadInst *HitMap = IRB1.CreateLoad(AFLMapHitPtr);
+          HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+          ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
+          Value *HitMapMapPtrIdx = IRB1.CreateGEP(HitMap, Idx);
+          IRB1.CreateStore(ConstantInt::get(Int8Ty, 1), HitMapMapPtrIdx)
+            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+        }
       }
 
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
