@@ -269,7 +269,7 @@ struct queue_entry {
       fs_redundant,                   /* Marked as redundant in the fs?   */
       pareto_used,                    /* Used in pareto frontier?         */
       pool_used,                      /* Used in vertical fuzzing?        */
-      prox_first,                     /* First calculated proximity?      */
+      prox_first;                     /* First calculated proximity?      */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       coverage_size,                  /* Number of blocks hit by entry    */
