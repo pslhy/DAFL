@@ -267,7 +267,7 @@ struct queue_entry {
       favored,                        /* Currently favored?               */
       fs_redundant,                   /* Marked as redundant in the fs?   */
       pareto_used,                    /* Used in pareto frontier?         */
-      pool_used;                      /* Used in vertical fuzzing?        */
+      pool_used,                      /* Used in vertical fuzzing?        */
       div_first;                      /* First in diversity calculation?  */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
