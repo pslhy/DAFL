@@ -269,7 +269,7 @@ struct queue_entry {
       fs_redundant,                   /* Marked as redundant in the fs?   */
       pareto_used,                    /* Used in pareto frontier?         */
       pool_used,                      /* Used in vertical fuzzing?        */
-      prox_first;                     /* First calculated proximity?      */
+      prox_cal;                       /* Proximity calculated?            */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       coverage_size,                  /* Number of blocks hit by entry    */
@@ -1336,11 +1336,11 @@ static u64 recompute_proximity_score(struct queue_entry* q) {
   /* PacFuzz: If the prox_score is already computed, return it.
       This is to avoid additional addition of the dfg_cnt. */
 
-  if (q->prox_first != 0) {
+  if (q->prox_cal != 0) {
     return q->prox_score;
   }
 
-  q->prox_first = 1;
+  q->prox_cal = 1;
 
   u64 prox_score = 0;
   u32 i = DFG_MAP_SIZE;
@@ -1354,6 +1354,10 @@ static u64 recompute_proximity_score(struct queue_entry* q) {
   }
 
   q->coverage_size = cover_cnt;
+
+  if (!fuzzing_strategy) {
+    ck_free(q->dfg_bits);
+  }
 
   return prox_score;
 }
@@ -1400,7 +1404,7 @@ static void add_to_all_entries(struct queue_entry* entry) {
   LOGF("[PacFuzz] [all_entries] [time %llu] Adding entry : %d\n", get_cur_time() - start_time, entry->entry_id);
 
   // No zero prox_score entry
-  if (entry->prox_score == 0) {
+  if (entry->prox_cal == 0) {
     entry->prox_score = recompute_proximity_score(entry);
   }
 
@@ -3342,7 +3346,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
-  if (fuzz_strategy && q->dfg_bits == NULL && q->dfg_sparse == NULL) {
+  if (q->dfg_bits == NULL && !q->prox_cal) {
     memcpy(q->dfg_bits, dfg_bits, sizeof(u32) * DFG_MAP_SIZE);
   }
   q->prox_score  = recompute_proximity_score(q);
@@ -4037,9 +4041,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     add_to_queue(fn, len, 0, 0, 0);
 
     // PacFuzz: We update path count when we add entry to the queue.
-    if (fuzz_strategy) {
-      memcpy(queue_last->dfg_bits, dfg_bits, sizeof(u32) * DFG_MAP_SIZE);
-    }
+    memcpy(queue_last->dfg_bits, dfg_bits, sizeof(u32) * DFG_MAP_SIZE);
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
