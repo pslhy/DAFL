@@ -108,7 +108,8 @@ EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
 EXP_ST u32 exec_tmout = EXEC_TIMEOUT; /* Configurable exec timeout (ms)   */
 static u32 hang_tmout = EXEC_TIMEOUT; /* Timeout used for hang det (ms)   */
 
-EXP_ST u32 horizontal_time = 60;      /* Horizontal fuzzing time (sec)    */
+EXP_ST u32 horizontal_time = 60;      /* Horizontal fuzzing time (min)    */
+EXP_ST double path_penalty = 0.1;     /* Path penalty for PACFuzz         */
 
 EXP_ST u64 mem_limit  = MEM_LIMIT;    /* Memory cap for child (MB)        */
 
@@ -267,10 +268,10 @@ struct queue_entry {
       favored,                        /* Currently favored?               */
       fs_redundant,                   /* Marked as redundant in the fs?   */
       pareto_used,                    /* Used in pareto frontier?         */
-      pool_used,                      /* Used in vertical fuzzing?        */
-      div_first;                      /* First in diversity calculation?  */
+      pool_used;                      /* Used in vertical fuzzing?        */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
+      coverage_size,                  /* Number of blocks hit by entry    */
       exec_cksum;                     /* Checksum of the execution trace  */
 
   u64 prox_score;                     /* Proximity score of the test case */
@@ -283,7 +284,8 @@ struct queue_entry {
 
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
-  u32* dfg_bits;                      /* DFG coverage bitmap              */
+  u32* dfg_sparse;                    /* DFG coverage sparse array        */
+  u32* dfg_bits;                      /* DFG bitmap (freed after use)     */
 
   struct queue_entry *next;           /* Next element, if any             */
   struct queue_entry *pareto_next;    /* Next element in pareto frontier  */
@@ -1316,6 +1318,8 @@ static u32 get_dfg_hash() {
 
 static u64 compute_proximity_score(void) {
 
+  // PacFuzz: Thie function just computes and returns the proximity score.
+
   u64 prox_score = 0;
   u32 i = DFG_MAP_SIZE;
 
@@ -1328,77 +1332,53 @@ static u64 compute_proximity_score(void) {
 
 static u64 recompute_proximity_score(struct queue_entry* q) {
 
+  /* PacFuzz: If the prox_score is already computed, return it.
+      This is to avoid additional addition of the dfg_cnt. */
+
+  if (q->prox_score != 0) {
+    return q->prox_score;
+  }
+
   u64 prox_score = 0;
-  u32 i = DFG_MAP_SIZE;
+  u32 i = q->coverage_size;
 
   while (i--) {
-    prox_score += q->dfg_bits[i];
+    prox_score += q->dfg_sparse[i * 2 + 1];
   }
 
   return prox_score;
 }
 
-
-static void update_dfg_node_cnt(void) {
-    u32 i = DFG_MAP_SIZE;
-    //LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Updating dfg node count\n", get_cur_time() - start_time);
-
-    while (i--) {
-      if (affected_entries[i] && dfg_bits[i] > 0) {
-        // Decrease the score of the affected entries
-        struct entry_list* elem = affected_entries[i];
-        if(!elem) {
-          dfg_cnt[i] += 1;
-          continue;
-        }
-        int prev_value = elem->score * pow(0.9, dfg_cnt[i]);
-        dfg_cnt[i] += 1;
-        int new_value = prev_value * 0.9;
-        while (elem && elem->entry) {
-          u64 gap = (prev_value - new_value) > 0 ? (prev_value - new_value) : 0;
-          if (gap > elem->entry->diverse_score) {
-            gap = elem->entry->diverse_score;
-          }
-          total_div_score -= gap;
-          elem->entry->diverse_score -= gap;
-          if (elem->entry->diverse_score > max_div_score) { max_div_score = elem->entry->diverse_score; }
-          if (elem->entry->diverse_score < min_div_score) { min_div_score = elem->entry->diverse_score; }
-          //LOGF("[PacFuzz] [update_dfg_node_cnt] [time %llu] Entry ID: %d, Diverse score: %llu\n", get_cur_time() - start_time, elem->entry->entry_id, elem->entry->diverse_score);
-          elem = elem->next;
-        }
-      }
-    }
-}
-
-/* PacFuzz: compute the diversity score of the current execution path. 
-   Should be called after update_dfg_node_cnt. */
-
-static u64 compute_diversity_score(struct queue_entry* q) {
-
-  double div_score = 0;
+static u32* get_dfg_sparse(struct queue_entry* q) {
   u32 i = DFG_MAP_SIZE;
+  u32 j = 0;
+  u32 cover_cnt = 0;
 
-  if(q->div_first != 0) {
-    return q->diverse_score;
-  }
-
-  q->div_first = 1;
+  u32* dfg_sparse = ck_alloc(q->coverage_size * 2 * sizeof(u32));
 
   while (i--) {
     if (q->dfg_bits[i] > 0) {
-      div_score += q->dfg_bits[i] * pow(0.9, dfg_cnt[i]);
-      struct entry_list* entry_elem = ck_alloc(sizeof(struct entry_list));
-      entry_elem->entry = q;
-      entry_elem->score = q->dfg_bits[i];
-      
-      // Add the node to the affected_entries
-      if (affected_entries[i] == NULL) {
-        affected_entries[i] = entry_elem;
-      } else {
-        entry_elem->next = affected_entries[i];
-        affected_entries[i] = entry_elem;
-      }
+      dfg_sparse[j] = i;
+      cover_cnt += 1;
+      dfg_sparse[j + 1] = q->dfg_bits[i];
+      j += 2;
     }
+  }
+
+  q->coverage_size = cover_cnt;
+  ck_free(q->dfg_bits);
+  return dfg_sparse;
+}
+
+/* PacFuzz: compute the diversity score of the current execution path. */
+
+static double compute_diversity_score(struct queue_entry* q) {
+
+  double div_score = 0;
+  u32 i = q->coverage_size;
+
+  while (i--) {
+    div_score += q->dfg_sparse[i * 2 + 1] * pow(1.0 - path_penalty, dfg_cnt[q->dfg_sparse[i * 2]]);
   }
 
   LOGF("[PacFuzz] [compute_diversity_score] [time %llu] Diverse score: %f Entry ID: %d\n", get_cur_time() - start_time, div_score, q->entry_id);
@@ -1496,6 +1476,9 @@ static void find_pareto_frontier(u8 only_new) {
   struct queue_entry* q = all_entries;
   
   while(q != NULL) {
+
+    q->diverse_score = compute_diversity_score(q);
+
     if (q->diverse_score > max_diverse_score && (!only_new || q->pareto_used == 0)) {
       if(!only_new) {
         q->pareto_used = 0;
@@ -1548,6 +1531,7 @@ static void select_next_entry() {
 
       queue_cur = pop_pareto_frontier();
       LOGF("[PacFuzz] [seed select] queue_cur: %d, prox score: %llu, diverse score: %lf\n", queue_cur->entry_id, queue_cur->prox_score, queue_cur->diverse_score);
+    
     case FUZZ_VERTICAL_SORTED:
       break;
     case FUZZ_VERTICAL_EVENLY:
@@ -3352,15 +3336,17 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
-  q->prox_score  = compute_proximity_score();
-  q->dfg_bits = dfg_bits;
+  if (fuzz_strategy && q->dfg_bits == NULL && q->dfg_sparse == NULL) {
+    memcpy(q->dfg_bits, dfg_bits, sizeof(u32) * DFG_MAP_SIZE);
+  }
+  q->dfg_sparse = get_dfg_sparse(q);
+  q->prox_score  = recompute_proximity_score(q);
   q->diverse_score = fuzz_strategy ? compute_diversity_score(q) : 0;
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
   if (fuzz_strategy) {
     add_to_all_entries(q);
-    find_pareto_frontier(1);
   }
 
   total_bitmap_size += q->bitmap_size;
@@ -4042,13 +4028,11 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
-    add_to_queue(fn, len, 0, prox_score, 0);
-    queue_last->dfg_bits = dfg_bits;
+    add_to_queue(fn, len, 0, 0, 0);
 
     // PacFuzz: We update path count when we add entry to the queue.
     if (fuzz_strategy) {
-      update_dfg_node_cnt();
-      queue_last->diverse_score = compute_diversity_score(queue_last);
+      memcpy(queue_last->dfg_bits, dfg_bits, sizeof(u32) * DFG_MAP_SIZE);
     }
 
     if (hnb == 2) {
