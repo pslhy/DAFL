@@ -268,7 +268,8 @@ struct queue_entry {
       favored,                        /* Currently favored?               */
       fs_redundant,                   /* Marked as redundant in the fs?   */
       pareto_used,                    /* Used in pareto frontier?         */
-      pool_used;                      /* Used in vertical fuzzing?        */
+      pool_used,                      /* Used in vertical fuzzing?        */
+      prox_first,                     /* First calculated proximity?      */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       coverage_size,                  /* Number of blocks hit by entry    */
@@ -1335,16 +1336,23 @@ static u64 recompute_proximity_score(struct queue_entry* q) {
   /* PacFuzz: If the prox_score is already computed, return it.
       This is to avoid additional addition of the dfg_cnt. */
 
-  if (q->prox_score != 0) {
+  if (q->prox_first != 0) {
     return q->prox_score;
   }
 
+  q->prox_first = 1;
+
   u64 prox_score = 0;
-  u32 i = q->coverage_size;
+  u32 i = DFG_MAP_SIZE;
 
   while (i--) {
-    prox_score += q->dfg_sparse[i * 2 + 1];
+    if (q->dfg_bits[i] > 0) {
+      cover_cnt += 1;
+      prox_score += q->dfg_bits[i];
+    }
   }
+
+  q->coverage_size = cover_cnt;
 
   return prox_score;
 }
@@ -1352,20 +1360,17 @@ static u64 recompute_proximity_score(struct queue_entry* q) {
 static u32* get_dfg_sparse(struct queue_entry* q) {
   u32 i = DFG_MAP_SIZE;
   u32 j = 0;
-  u32 cover_cnt = 0;
 
   u32* dfg_sparse = ck_alloc(q->coverage_size * 2 * sizeof(u32));
 
   while (i--) {
     if (q->dfg_bits[i] > 0) {
       dfg_sparse[j] = i;
-      cover_cnt += 1;
       dfg_sparse[j + 1] = q->dfg_bits[i];
       j += 2;
     }
   }
 
-  q->coverage_size = cover_cnt;
   ck_free(q->dfg_bits);
   return dfg_sparse;
 }
@@ -3339,8 +3344,8 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   if (fuzz_strategy && q->dfg_bits == NULL && q->dfg_sparse == NULL) {
     memcpy(q->dfg_bits, dfg_bits, sizeof(u32) * DFG_MAP_SIZE);
   }
-  q->dfg_sparse = get_dfg_sparse(q);
   q->prox_score  = recompute_proximity_score(q);
+  q->dfg_sparse = get_dfg_sparse(q);
   q->diverse_score = fuzz_strategy ? compute_diversity_score(q) : 0;
   q->handicap    = handicap;
   q->cal_failed  = 0;
