@@ -109,7 +109,7 @@ EXP_ST u8 *in_dir,                    /* Input directory with test cases  */
 EXP_ST u32 exec_tmout = EXEC_TIMEOUT; /* Configurable exec timeout (ms)   */
 static u32 hang_tmout = EXEC_TIMEOUT; /* Timeout used for hang det (ms)   */
 
-EXP_ST u32 horizontal_time = 60;      /* Horizontal fuzzing time (sec)    */
+EXP_ST u32 horizontal_time = 60;      /* Horizontal fuzzing time (min)    */
 
 EXP_ST u64 mem_limit  = MEM_LIMIT;    /* Memory cap for child (MB)        */
 
@@ -1595,18 +1595,34 @@ void vertical_entry_sorted_insert(struct vertical_manager *manager, struct verti
   }
 }
 
-void vertical_entry_add(struct vertical_manager *manager, struct vertical_entry *entry, struct queue_entry *q, struct key_value_pair *kvp) {
-  if (q != NULL) push_back(entry->entries, q);
-  if (fuzz_strategy == FUZZ_VERTICAL_SORTED) {
-    // Insert the entry to the sorted list only if it found new valuation
-    u32 size = vector_size(entry->entries) + vector_size(entry->old_entries);
-    if ((!kvp && size > 0) || (size == 1 && q)) vertical_entry_sorted_insert(manager, entry, 1);
-  } else if (q != NULL) { // FUZZ_VERTICAL_EVENLY
-    if (vector_size(entry->entries) == 1) {
+void vertical_entry_update(struct vertical_manager *manager, struct vertical_entry *entry) {
+  u32 size = vector_size(entry->entries) + vector_size(entry->old_entries);
+  if (size > 0 && fuzz_strategy == FUZZ_VERTICAL_SORTED) {
+    vertical_entry_sorted_insert(manager, entry, 1);
+  }
+}
+
+void vertical_entry_add(struct vertical_manager *manager, u32 dfg_hash, struct queue_entry *q) {
+  
+  struct key_value_pair *local_kvp = hashmap_get(manager->map, dfg_hash);
+  if (local_kvp == NULL || q == NULL) {
+    LOGF("[error] [vert-entry] [add] [no-entry] [hash %u] [q %d]\n", dfg_hash, q == NULL ? -1 : q->entry_id);
+    return;
+  }
+  struct vertical_entry *entry = local_kvp->value;
+  push_back(entry->entries, q);
+  u32 size = vector_size(entry->entries) + vector_size(entry->old_entries);
+  if (size == 1) { // First seed in the dfg path
+    if (fuzz_strategy == FUZZ_VERTICAL_SORTED) {
+      // Insert the entry to the sorted list
+      vertical_entry_sorted_insert(manager, entry, 1);
+    } else { // FUZZ_VERTICAL_EVENLY
+      // Insert the entry to the head
       entry->next = manager->head;
       manager->head = entry;
     }
   }
+
 }
 
 struct vertical_manager *vertical_manager_create() {
@@ -1680,7 +1696,7 @@ struct vertical_entry *vertical_manager_select_entry(struct vertical_manager *ma
 enum VerticalMode vertical_manager_select_mode(struct vertical_manager *manager) {
   enum VerticalMode initial_mode = M_HOR;
   if (!manager->dynamic_mode) {
-    if (get_cur_time() - start_time < horizontal_time * 1000) {
+    if (get_cur_time() - start_time < horizontal_time * 60 * 1000) {
       manager->use_vertical = 0;
     } else {
       manager->dynamic_mode = 1;
@@ -1774,13 +1790,13 @@ static void select_next_entry() {
     break;
   }
   if (queue_cur == NULL) { // If no seed is selected, then select the first seed in the queue.
-      if (first_unhandled) { // This is set only when a new item was added.
-        queue_cur = first_unhandled;
-        first_unhandled = NULL;
-      } else { // Proceed to the next unhandled item in the queue.
-        while (queue_cur && queue_cur->handled_in_cycle)
-          queue_cur = queue_cur->next;
-      }
+    if (first_unhandled) { // This is set only when a new item was added.
+      queue_cur = first_unhandled;
+      first_unhandled = NULL;
+    } else { // Proceed to the next unhandled item in the queue.
+      while (queue_cur && queue_cur->handled_in_cycle)
+        queue_cur = queue_cur->next;
+    }
   }
 }
 
@@ -3716,7 +3732,7 @@ static void save_valuation(u32 val_hash, u8 *valuation_file, u8 crashed) {
 
 /* PacFuzz: get valuation function */
 
-static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_hash, u8 **valuation_file) {
+static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_hash, u8 **valuation_file, u32 dfg_hash) {
 
   u8 *valexe = "";
   u8 *covdir = "";
@@ -3760,8 +3776,23 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
 
   u32 hash = hash_file(tmpfile);
 
-  // Check if the hash is already in the hash table
+  // Add to vertical manager
+  struct key_value_pair *local_kvp = hashmap_get(vertical_manager->map, dfg_hash);
+  if (local_kvp == NULL) { // New dfg path
+    struct vertical_entry *ve = vertical_entry_create(dfg_hash);
+    hashmap_insert(vertical_manager->map, dfg_hash, ve);
+    local_kvp = hashmap_get(vertical_manager->map, dfg_hash);
+    LOGF("[PacFuzz] [run_valuation] [new-dfg] [hash %u] [time %llu]\n", dfg_hash, get_cur_time() - start_time);
+  }
+  struct vertical_entry *local_entry = local_kvp->value;
+  struct key_value_pair *local_val_kvp = hashmap_get(local_entry->value_map, hash);
+  if (local_val_kvp == NULL) { // New valuation for this dfg path
+    hashmap_insert(local_entry->value_map, hash, NULL);
+    LOGF("[PacFuzz] [run_valuation] [new-val] [hash %u] [time %llu]\n", hash, get_cur_time() - start_time);
+    vertical_entry_update(vertical_manager, local_entry);
+  }
 
+  // Check if the hash is already in the hash table
   if (is_memval_used(hash)) {
     LOGF("[PacFuzz] [run_valuation] [hash %u] [already-exist] [time %llu]\n", hash, get_cur_time() - start_time);
     remove(tmpfile);
@@ -3776,13 +3807,13 @@ static u8 run_valuation(u8 crashed, char** argv, void* mem, u32 len, u32 *val_ha
   return 1;
 }
 
-static u8 get_valuation(char** argv, u8* use_mem, u32 len, u8 crashed) {
+static u8 get_valuation(char** argv, u8* use_mem, u32 len, u8 crashed, u32 dfg_hash) {
   // Check current run is covering target line
   if (check_target_covered()) {
     LOGF("[PacFuzz] [get_valuation] [target-covered] [time %llu]\n", get_cur_time() - start_time);
     u32 val_hash;
     u8 *valuation_file;
-    u8 success = run_valuation(1, argv, use_mem, len, &val_hash, &valuation_file);
+    u8 success = run_valuation(1, argv, use_mem, len, &val_hash, &valuation_file, dfg_hash);
     if (success) {
       save_valuation(val_hash, valuation_file, crashed);
     }
@@ -3830,13 +3861,17 @@ static void perform_dry_run(char** argv) {
       SAYF(cGRA "    len = %u, map size = %u, exec speed = %llu us\n" cRST,
            q->len, q->bitmap_size, q->exec_us);
 
+    u32 dfg_hash = get_dfg_hash();
+
     switch (res) {
 
       case FAULT_NONE:
 
         if (q == queue) check_map_coverage();
 
-        get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc());
+        get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc(), dfg_hash);
+        if (check_target_covered())
+          vertical_entry_add(vertical_manager, dfg_hash, q);
 
         if (crash_mode) FATAL("Test case '%s' does *NOT* crash", fn);
 
@@ -3882,7 +3917,9 @@ static void perform_dry_run(char** argv) {
         }
 
       case FAULT_CRASH:
-        get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc());
+        get_valuation(argv, use_mem, q->len, is_crashed_at_target_loc(), dfg_hash);
+        if (check_target_covered())
+          vertical_entry_add(vertical_manager, dfg_hash, q);
 
         if (crash_mode) break;
 
@@ -4229,7 +4266,9 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u64 prox_score, div_score;
   u8 has_unique_memval, save_to_queue = 0;
 
-  has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc());
+  u32 dfg_hash = get_dfg_hash();
+
+  has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc(), dfg_hash);
   hnb = has_new_bits(virgin_bits);
   save_to_queue = fault == crash_mode;
 
@@ -4286,6 +4325,9 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     }
 
     queue_last->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+
+    if (check_target_covered())
+      vertical_entry_add(vertical_manager, dfg_hash, queue_last);
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */

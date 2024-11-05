@@ -358,7 +358,9 @@ struct vertical_entry *vertical_entry_create(u32 hash);
 
 void vertical_entry_sorted_insert(struct vertical_manager *manager, struct vertical_entry *entry, u8 update);
 
-void vertical_entry_add(struct vertical_manager *manager, struct vertical_entry *entry, struct queue_entry *q, struct key_value_pair *kvp);
+void vertical_entry_update(struct vertical_manager *manager, struct vertical_entry *entry);
+
+void vertical_entry_add(struct vertical_manager *manager, u32 dfg_hash, struct queue_entry *q);
 
 struct vertical_manager *vertical_manager_create();
 
