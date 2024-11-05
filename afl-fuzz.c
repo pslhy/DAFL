@@ -286,7 +286,6 @@ struct queue_entry {
   u8* trace_mini;                     /* Trace bytes, if kept             */
   u32 tc_ref;                         /* Trace bytes ref count            */
   u32* dfg_sparse;                    /* DFG coverage sparse array        */
-  u32* dfg_bits;                      /* DFG bitmap (freed after use)     */
 
   struct queue_entry *next;           /* Next element, if any             */
   struct queue_entry *pareto_next;    /* Next element in pareto frontier  */
@@ -1347,17 +1346,13 @@ static u64 recompute_proximity_score(struct queue_entry* q) {
   u32 cover_cnt = 0;
 
   while (i--) {
-    if (q->dfg_bits[i] > 0) {
+    if (dfg_bits[i] > 0) {
       cover_cnt += 1;
-      prox_score += q->dfg_bits[i];
+      prox_score += dfg_bits[i];
     }
   }
 
   q->coverage_size = cover_cnt;
-
-  if (!fuzz_strategy) {
-    ck_free(q->dfg_bits);
-  }
 
   return prox_score;
 }
@@ -1369,14 +1364,13 @@ static u32* get_dfg_sparse(struct queue_entry* q) {
   u32* dfg_sparse = ck_alloc((q->coverage_size + 1) * 2 * sizeof(u32));
 
   while (i--) {
-    if (q->dfg_bits[i] > 0) {
+    if (dfg_bits[i] > 0) {
       dfg_sparse[j] = i;
-      dfg_sparse[j + 1] = q->dfg_bits[i];
+      dfg_sparse[j + 1] = dfg_bits[i];
       j += 2;
     }
   }
 
-  ck_free(q->dfg_bits);
   return dfg_sparse;
 }
 
@@ -3346,9 +3340,6 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   q->exec_us     = (stop_us - start_us) / stage_max;
   q->bitmap_size = count_bytes(trace_bits);
-  if (q->dfg_bits == NULL && !q->prox_cal) {
-    memcpy(q->dfg_bits, dfg_bits, sizeof(u32) * DFG_MAP_SIZE);
-  }
   q->prox_score  = recompute_proximity_score(q);
   q->dfg_sparse = fuzz_strategy ? get_dfg_sparse(q) : NULL;
   q->diverse_score = fuzz_strategy ? compute_diversity_score(q) : 0;
@@ -4039,9 +4030,6 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 #endif /* ^!SIMPLE_FILES */
 
     add_to_queue(fn, len, 0, 0, 0);
-
-    // PacFuzz: We update path count when we add entry to the queue.
-    memcpy(queue_last->dfg_bits, dfg_bits, sizeof(u32) * DFG_MAP_SIZE);
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
