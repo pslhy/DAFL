@@ -3348,7 +3348,6 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
   q->prox_score  = compute_proximity_score();
   q->dfg_bits = dfg_bits;
   q->diverse_score = fuzz_strategy ? compute_diversity_score(q) : 0;
-  if (fuzz_strategy) update_dfg_node_cnt();
   q->handicap    = handicap;
   q->cal_failed  = 0;
 
@@ -4036,6 +4035,8 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
+    // PacFuzz: We update path count when we add entry to the queue.
+    if (fuzz_strategy) update_dfg_node_cnt();
     add_to_queue(fn, len, 0, prox_score, 0);
     queue_last->dfg_bits = dfg_bits;
     // queue_last->diverse_score = compute_diversity_score(queue_last);
