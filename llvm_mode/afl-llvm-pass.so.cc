@@ -249,6 +249,24 @@ bool AFLCoverage::runOnModule(Module &M) {
 
               if (targ_str.compare(target_info) == 0) {
                 is_target_node = true;
+
+                // Instrument the target node in term of instruction.
+                IRBuilder<> IRB(&inst);
+                LoadInst *HitMap = IRB.CreateLoad(AFLMapHitPtr);
+                HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+                ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
+                Value *HitMapMapPtrIdx = IRB.CreateGEP(HitMap, Idx);
+                IRB.CreateStore(ConstantInt::get(Int8Ty, 1), HitMapMapPtrIdx)
+                    ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+
+                Instruction *nextInst = inst->getNextNode();
+                IRBuilder<> IRB1(&nextInst);
+                LoadInst *HitMap1 = IRB1.CreateLoad(AFLMapHitPtr);
+                HitMap1->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
+                ConstantInt * Idx1 = ConstantInt::get(Int32Ty, 0);
+                Value *HitMapMapPtrIdx1 = IRB1.CreateGEP(HitMap1, Idx1);
+                IRB1.CreateStore(ConstantInt::get(Int8Ty, 0), HitMapMapPtrIdx1)
+                    ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
               }
 
               auto node_info = dfg_node_map[targ_str];
@@ -261,41 +279,8 @@ bool AFLCoverage::runOnModule(Module &M) {
         }
       } // If disabled, we don't have to do anything here.
 
-      if (is_target_node) {
-        // Get terminator of target basic block
-        Instruction *terminator = BB.getTerminator();
-      
-        if (terminator) {
-          IRBuilder<> IRB1(terminator); 
-          LoadInst *HitMap = IRB1.CreateLoad(AFLMapHitPtr);
-          HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-          ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
-          Value *HitMapMapPtrIdx = IRB1.CreateGEP(HitMap, Idx);
-          IRB1.CreateStore(ConstantInt::get(Int8Ty, 1), HitMapMapPtrIdx)
-            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-        } else {
-          IRBuilder<> IRB1(&BB);
-          LoadInst *HitMap = IRB1.CreateLoad(AFLMapHitPtr);
-          HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-          ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
-          Value *HitMapMapPtrIdx = IRB1.CreateGEP(HitMap, Idx);
-          IRB1.CreateStore(ConstantInt::get(Int8Ty, 1), HitMapMapPtrIdx)
-            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-        }
-      }
-
       BasicBlock::iterator IP = BB.getFirstInsertionPt();
       IRBuilder<> IRB(&(*IP));
-
-      if (is_target_node) {
-        LoadInst *HitMap = IRB.CreateLoad(AFLMapHitPtr);
-        HitMap->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-        ConstantInt * Idx = ConstantInt::get(Int32Ty, 0);
-        Value *HitMapMapPtrIdx = IRB.CreateGEP(HitMap, Idx);
-        IRB.CreateStore(ConstantInt::get(Int8Ty, 0), HitMapMapPtrIdx)
-            ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
-      }
-
 
       /* Make up cur_loc */
 
