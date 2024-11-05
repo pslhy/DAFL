@@ -260,7 +260,7 @@ bool AFLCoverage::runOnModule(Module &M) {
                     ->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
 
                 Instruction *nextInst = inst.getNextNonDebugInstruction();
-                IRBuilder<> IRB1(&nextInst);
+                IRBuilder<> IRB1(nextInst);
                 LoadInst *HitMap1 = IRB1.CreateLoad(AFLMapHitPtr);
                 HitMap1->setMetadata(M.getMDKindID("nosanitize"), MDNode::get(C, None));
                 ConstantInt * Idx1 = ConstantInt::get(Int32Ty, 0);
