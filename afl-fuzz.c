@@ -1355,7 +1355,7 @@ static u64 recompute_proximity_score(struct queue_entry* q) {
 
   q->coverage_size = cover_cnt;
 
-  if (!fuzzing_strategy) {
+  if (!fuzz_strategy) {
     ck_free(q->dfg_bits);
   }
 
