@@ -1030,7 +1030,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
 /* Append new test case to the queue. */
 
-static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u8 prox_cal) {
+static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score) {
 
   LOGF("[PacFuzz] [add_to_queue] [time %llu] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu\n", get_cur_time() - start_time, fname, len, passed_det, prox_score);
 
@@ -1041,7 +1041,6 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u8 p
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
   q->prox_score   = prox_score;
-  q->prox_cal     = prox_cal;
   q->entry_id     = queued_paths;
 
   if (q->depth > max_depth) max_depth = q->depth;
@@ -2006,7 +2005,7 @@ static void read_testcases(void) {
 
     // Provide 0 as the proximity score and update later in calibrate_case(),
     // and sort later after the dry-run phase.
-    add_to_queue(fn, st.st_size, passed_det, 0, 0);
+    add_to_queue(fn, st.st_size, passed_det, 0);
 
   }
 
@@ -4033,7 +4032,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
-    add_to_queue(fn, len, 0, prox_score, 1);
+    add_to_queue(fn, len, 0, prox_score);
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
