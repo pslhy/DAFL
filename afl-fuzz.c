@@ -1030,7 +1030,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
 /* Append new test case to the queue. */
 
-static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, double diverse_score) {
+static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u8 prox_cal) {
 
   LOGF("[PacFuzz] [add_to_queue] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu, diverse_score: %lf\n", fname, len, passed_det, prox_score, diverse_score);
 
@@ -1041,7 +1041,7 @@ static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, doub
   q->depth        = cur_depth + 1;
   q->passed_det   = passed_det;
   q->prox_score   = prox_score;
-  q->diverse_score = diverse_score;
+  q->prox_cal     = prox_cal;
   q->entry_id     = queued_paths;
 
   if (q->depth > max_depth) max_depth = q->depth;
@@ -3987,6 +3987,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u64 prox_score, div_score;
   u8 has_unique_memval, save_to_queue = 0;
 
+  // FIXME - If timeout, drop out the testcase
   has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc());
   hnb = has_new_bits(virgin_bits);
   save_to_queue = fault == crash_mode;
@@ -3997,6 +3998,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   // is_new_valuation(); <- add_to_pathpool()
   // is_vertical - global variable
 
+  LOGF("[PacFuzz] [save_if_interesting] current stage : %s\n", describe_op(1));
 
 
   if (save_to_queue) {
@@ -4029,7 +4031,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
-    add_to_queue(fn, len, 0, 0, 0);
+    add_to_queue(fn, len, 0, prox_score, 1);
 
     if (hnb == 2) {
       queue_last->has_new_cov = 1;
