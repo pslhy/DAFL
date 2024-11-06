@@ -1032,7 +1032,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
 static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u8 prox_cal) {
 
-  LOGF("[PacFuzz] [add_to_queue] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu, diverse_score: %lf\n", fname, len, passed_det, prox_score, diverse_score);
+  LOGF("[PacFuzz] [add_to_queue] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu\n", fname, len, passed_det, prox_score);
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
