@@ -1032,7 +1032,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
 static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u8 prox_cal) {
 
-  LOGF("[PacFuzz] [add_to_queue] [time %llu] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu\n", fname, len, passed_det, prox_score, get_cur_time() - start_time);
+  LOGF("[PacFuzz] [add_to_queue] [time %llu] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu\n", get_cur_time() - start_time, fname, len, passed_det, prox_score);
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -4000,7 +4000,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   // is_new_valuation(); <- add_to_pathpool()
   // is_vertical - global variable
 
-  LOGF("[PacFuzz] [save_if_interesting] [time %llu] current stage : %s\n", describe_op(1), get_cur_time() - start_time);
+  LOGF("[PacFuzz] [save_if_interesting] [time %llu] current stage : %s\n", get_cur_time() - start_time, describe_op(1));
 
 
   if (save_to_queue) {
