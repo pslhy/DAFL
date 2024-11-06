@@ -1526,7 +1526,7 @@ void vertical_entry_sorted_insert(struct vertical_manager *manager, struct verti
   if (entry == NULL)
     return;
   if (update)
-    LOGF("[vert-entry] [insert] [entry %u] [vals %u] [entries %u]\n", entry->hash, hashmap_size(entry->value_map), vector_size(entry->entries) + vector_size(entry->old_entries));
+    LOGF("[PacFuzz] [vertical_entry_sorted_insert] [entry %u] [vals %u] [entries %u]\n", entry->hash, hashmap_size(entry->value_map), vector_size(entry->entries) + vector_size(entry->old_entries));
   struct vertical_entry *cur = manager->head;
   if (!cur) {
     manager->head = entry;
@@ -1568,7 +1568,7 @@ void vertical_entry_sorted_insert(struct vertical_manager *manager, struct verti
       cur->next = entry;
       entry->next = NULL;
       if (hashmap_size(entry->value_map) < hashmap_size(cur->value_map)) {
-        LOGF("[error] [vert-entry] [insert] [error] [entry %u] [vals %u] [entries %u] [cur %u] [cur-vals %u] [cur-entries %u]\n", entry->hash, hashmap_size(entry->value_map), vector_size(entry->entries) + vector_size(entry->old_entries), cur->hash, hashmap_size(cur->value_map), vector_size(cur->entries) + vector_size(cur->old_entries));
+        LOGF("[PacFuzz] [vertical_entry_sorted_insert] [error] [entry %u] [vals %u] [entries %u] [cur %u] [cur-vals %u] [cur-entries %u]\n", entry->hash, hashmap_size(entry->value_map), vector_size(entry->entries) + vector_size(entry->old_entries), cur->hash, hashmap_size(cur->value_map), vector_size(cur->entries) + vector_size(cur->old_entries));
       }
       break;
     } else if (hashmap_size(entry->value_map) < hashmap_size(cur->next->value_map)) {
@@ -1592,7 +1592,7 @@ void vertical_entry_add(struct vertical_manager *manager, u32 dfg_hash, struct q
   
   struct key_value_pair *local_kvp = hashmap_get(manager->map, dfg_hash);
   if (local_kvp == NULL || q == NULL) {
-    LOGF("[error] [vert-entry] [add] [no-entry] [hash %u] [q %d]\n", dfg_hash, q == NULL ? -1 : q->entry_id);
+    LOGF("[PacFuzz] [vertical_entry_add] [error] [no-entry] [hash %u] [q %d]\n", dfg_hash, q == NULL ? -1 : q->entry_id);
     return;
   }
   struct vertical_entry *entry = local_kvp->value;
@@ -1657,7 +1657,7 @@ struct vertical_entry *vertical_manager_select_entry(struct vertical_manager *ma
     entry->use_count++;
     entry->next = NULL;
     vertical_entry_sorted_insert(manager, entry, 0);
-    LOGF("[vert-entry] [sel] [selected %u] [vals %u] [entries %u]\n", entry ? entry->hash : -1, entry ? hashmap_size(entry->value_map) : 0, entry ? vector_size(entry->entries) + vector_size(entry->old_entries) : 0);
+    LOGF("[PacFuzz] [vertical_manager_select_entry] Selected dfg hash: %u, # of valuation: %u, # of entries: %u\n", entry ? entry->hash : -1, entry ? hashmap_size(entry->value_map) : 0, entry ? vector_size(entry->entries) + vector_size(entry->old_entries) : 0);
     return entry;
   }
   if (entry) {
@@ -1736,7 +1736,7 @@ static struct queue_entry* select_next_entry_vertical() {
 
   // push back to the old queue for recycling
   vertical_manager_insert_to_old(vertical_manager, entry, q);
-  LOGF("[sel] [vertical] [id %d] [dfg-path %u] [time %llu]\n", q ? q->entry_id : -1, entry->hash, get_cur_time() - start_time);
+  LOGF("[PacFuzz] [select_next_entry_vertical] [id %d] [dfg-path %u] [time %llu]\n", q ? q->entry_id : -1, entry->hash, get_cur_time() - start_time);
   return q;
 }
 
@@ -1777,6 +1777,7 @@ static void select_next_entry() {
       break;
   }
   if (queue_cur == NULL) { // If no seed is selected, then select the first seed in the queue.
+    LOGF("[PacFuzz] [seed select] queue_cur is NULL - We choose first seed in the queue\n");
     if (first_unhandled) { // This is set only when a new item was added.
       queue_cur = first_unhandled;
       first_unhandled = NULL;
