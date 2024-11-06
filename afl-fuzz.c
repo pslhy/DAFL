@@ -3237,7 +3237,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   static u8 first_trace[MAP_SIZE];
 
-  u8  fault = 0, new_bits = 0, var_detected = 0, hnb = 0, abort_cal = 0;
+  u8  fault = 0, new_bits = 0, var_detected = 0, hnb = 0, abort_cal = 0,
       first_run = (q->exec_cksum == 0);
 
   u64 start_us, stop_us;
