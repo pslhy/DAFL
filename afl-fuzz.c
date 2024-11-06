@@ -1032,7 +1032,7 @@ static void sorted_insert_to_queue(struct queue_entry* q) {
 
 static void add_to_queue(u8* fname, u32 len, u8 passed_det, u64 prox_score, u8 prox_cal) {
 
-  LOGF("[PacFuzz] [add_to_queue] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu\n", fname, len, passed_det, prox_score);
+  LOGF("[PacFuzz] [add_to_queue] [time %llu] Add to queue: %s, len: %u, passed_det: %u, prox_score: %llu\n", fname, len, passed_det, prox_score, get_cur_time() - start_time);
 
   struct queue_entry* q = ck_alloc(sizeof(struct queue_entry));
 
@@ -3237,7 +3237,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
   static u8 first_trace[MAP_SIZE];
 
-  u8  fault = 0, new_bits = 0, var_detected = 0, hnb = 0,
+  u8  fault = 0, new_bits = 0, var_detected = 0, hnb = 0, abort_cal = 0;
       first_run = (q->exec_cksum == 0);
 
   u64 start_us, stop_us;
@@ -3288,7 +3288,9 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
 
-    if (stop_soon || fault != crash_mode) goto abort_calibration;
+    abort_cal = fuzz_strategy ? stop_soon : (stop_soon || fault != crash_mode);
+
+    if (abort_cal) goto abort_calibration;
 
     if (!dumb_mode && !stage_cur && !count_bytes(trace_bits)) {
       fault = FAULT_NOINST;
@@ -3998,7 +4000,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   // is_new_valuation(); <- add_to_pathpool()
   // is_vertical - global variable
 
-  LOGF("[PacFuzz] [save_if_interesting] current stage : %s\n", describe_op(1));
+  LOGF("[PacFuzz] [save_if_interesting] [time %llu] current stage : %s\n", describe_op(1), get_cur_time() - start_time);
 
 
   if (save_to_queue) {
