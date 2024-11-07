@@ -3997,23 +3997,23 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  keeping = 0, res;
   u64 prox_score, div_score;
   u8 has_unique_memval, save_to_queue = 0;
+  if (eff_mode) {
+    temp_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+  }
 
-  // FIXME - If timeout, drop out the testcase
-  has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc());
-  hnb = has_new_bits(virgin_bits);
-  save_to_queue = fault == crash_mode;
+  if (fault == FAULT_CRASH || fault == FAULT_NONE) {
+    has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc());
+    hnb = has_new_bits(virgin_bits);
+    save_to_queue = fault == crash_mode;
 
-  if(fuzz_strategy) {
-    save_to_queue = hnb || has_unique_memval;
+    if(fuzz_strategy) {
+      save_to_queue = hnb || has_unique_memval;
+    }
   }
   // is_new_valuation(); <- add_to_pathpool()
   // is_vertical - global variable
 
   LOGF("[PacFuzz] [save_if_interesting] [time %llu] current stage : %s\n", get_cur_time() - start_time, describe_op(1));
-
-  if (eff_mode) {
-    temp_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-  }
 
   if (save_to_queue) {
 
