@@ -141,6 +141,7 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            persistent_mode,           /* Running in persistent mode?      */
            deferred_mode,             /* Deferred forkserver mode?        */
            fast_cal,                  /* Try to calibrate faster?         */
+           eff_mode,                  /* Effector calculation mode?       */
            fuzz_strategy;             /* PACFuzz strategy                 */
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
@@ -163,6 +164,7 @@ EXP_ST u64 dfg_cnt[DFG_MAP_SIZE + 1];     /* DFG node hit count               */
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
            virgin_crash[MAP_SIZE];    /* Bits we haven't seen in crashes  */
+           virgin_normal[MAP_SIZE];   /* Bits we haven't seen in normals  */
 
 static u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
@@ -189,6 +191,7 @@ EXP_ST u32 queued_paths,              /* Total number of queued testcases */
            useless_at_start,          /* Number of useless starting paths */
            var_byte_count,            /* Bitmap bytes with var behavior   */
            current_entry,             /* Current queue entry ID           */
+           temp_cksum,                /* Temp storage for trace cksum     */
            havoc_div = 1;             /* Cycle count divisor for havoc    */
 
 EXP_ST u64 total_crashes,             /* Total number of crashes          */
@@ -1368,6 +1371,7 @@ static u32* get_dfg_sparse(struct queue_entry* q) {
   while (i--) {
     if (dfg_bits[i] > 0) {
       dfg_sparse[j] = i;
+      dfg_cnt[i] += 1;
       dfg_sparse[j + 1] = dfg_bits[i];
       j += 2;
     }
@@ -1505,8 +1509,14 @@ static void find_pareto_frontier(u8 only_new) {
   }
 
   pareto_size = new_frontier_size;
-  LOGF("[PacFuzz] [pareto] head :: diversity score %lf / proximity score %llu / entry_id %d\n", frontier->diverse_score, frontier->prox_score, frontier->entry_id);
-  LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier updated with %d entries\n", get_cur_time() - start_time, pareto_size);
+
+  if (frontier == NULL) {
+    LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier is empty\n", get_cur_time() - start_time);
+    return;
+  } else {
+    LOGF("[PacFuzz] [pareto] head :: diversity score %lf / proximity score %llu / entry_id %d\n", frontier->diverse_score, frontier->prox_score, frontier->entry_id);
+    LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier updated with %d entries\n", get_cur_time() - start_time, pareto_size);
+  }
 }
 
 // Begin vertical navigation stuff
@@ -4254,21 +4264,25 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   u8  keeping = 0, res;
   u64 prox_score, div_score;
   u8 has_unique_memval, save_to_queue = 0;
+  if (eff_mode) {
+    temp_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+  }
 
   u32 dfg_hash = get_dfg_hash();
 
-  has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc(), dfg_hash);
-  hnb = has_new_bits(virgin_bits);
-  save_to_queue = fault == crash_mode;
+  if (fault == FAULT_CRASH || fault == FAULT_NONE) {
+    has_unique_memval = get_valuation(argv, mem, len, is_crashed_at_target_loc(), dfg_hash);
+    hnb = has_new_bits(virgin_bits);
+    save_to_queue = fault == crash_mode;
 
-  if(fuzz_strategy) {
-    save_to_queue = hnb || has_unique_memval;
+    if(fuzz_strategy) {
+      save_to_queue = hnb || has_unique_memval;
+    }
   }
   // is_new_valuation(); <- add_to_pathpool()
   // is_vertical - global variable
 
   LOGF("[PacFuzz] [save_if_interesting] [time %llu] current stage : %s\n", get_cur_time() - start_time, describe_op(1));
-
 
   if (save_to_queue) {
 
@@ -4446,7 +4460,17 @@ keep_as_crash:
     case FAULT_NONE:
       total_normals++;
 
-      if (!has_new_bits(virgin_crash)) return keeping;
+      if (!dumb_mode) {
+
+#ifdef WORD_SIZE_64
+        simplify_trace((u64*)trace_bits);
+#else
+        simplify_trace((u32*)trace_bits);
+#endif /* ^WORD_SIZE_64 */
+
+        if (!has_new_bits(virgin_normal)) return keeping;
+
+      }
 
 #ifndef SIMPLE_FILES
 
@@ -6502,6 +6526,7 @@ static u8 fuzz_one(char** argv) {
   stage_name  = "bitflip 8/8";
   stage_short = "flip8";
   stage_max   = len;
+  eff_mode = 1;
 
   orig_hit_cnt = new_hit_cnt;
 
@@ -6526,9 +6551,9 @@ static u8 fuzz_one(char** argv) {
          without wasting time on checksums. */
 
       if (!dumb_mode && len >= EFF_MIN_LEN)
-        cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+        cksum = temp_cksum;
       else
-        cksum = ~queue_cur->exec_cksum;
+        cksum = ~temp_cksum;
 
       if (cksum != queue_cur->exec_cksum) {
         eff_map[EFF_APOS(stage_cur)] = 1;
@@ -6564,6 +6589,7 @@ static u8 fuzz_one(char** argv) {
 
   stage_finds[STAGE_FLIP8]  += new_hit_cnt - orig_hit_cnt;
   stage_cycles[STAGE_FLIP8] += stage_max;
+  eff_mode = 0;
 
   /* Two walking bytes. */
 
