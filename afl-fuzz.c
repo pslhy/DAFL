@@ -1366,6 +1366,7 @@ static u32* get_dfg_sparse(struct queue_entry* q) {
     if (dfg_bits[i] > 0) {
       dfg_sparse[j] = i;
       dfg_sparse[j + 1] = dfg_bits[i];
+      dfg_cnt[i] += 1;
       j += 2;
     }
   }
