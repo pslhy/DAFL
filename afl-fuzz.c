@@ -3297,7 +3297,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
        we want to bail out quickly. */
 
-    abort_cal = fuzz_strategy ? stop_soon : (stop_soon || fault != crash_mode);
+    abort_cal = (stop_soon || fault != crash_mode);
 
     if (abort_cal) goto abort_calibration;
 
