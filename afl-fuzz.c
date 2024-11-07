@@ -1502,8 +1502,14 @@ static void find_pareto_frontier(u8 only_new) {
   }
 
   pareto_size = new_frontier_size;
-  LOGF("[PacFuzz] [pareto] head :: diversity score %lf / proximity score %llu / entry_id %d\n", frontier->diverse_score, frontier->prox_score, frontier->entry_id);
-  LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier updated with %d entries\n", get_cur_time() - start_time, pareto_size);
+
+  if (frontier == NULL) {
+    LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier is empty\n", get_cur_time() - start_time);
+    return;
+  } else {
+    LOGF("[PacFuzz] [pareto] head :: diversity score %lf / proximity score %llu / entry_id %d\n", frontier->diverse_score, frontier->prox_score, frontier->entry_id);
+    LOGF("[PacFuzz] [pareto] [time %llu] Pareto frontier updated with %d entries\n", get_cur_time() - start_time, pareto_size);
+  }
 }
 
 static void select_next_entry() {
