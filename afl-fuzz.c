@@ -1526,7 +1526,8 @@ static void select_next_entry() {
         while (queue_cur && queue_cur->handled_in_cycle)
           queue_cur = queue_cur->next;
       }
-      LOGF("[DAFL] [seed select] queue_cur: %d, prox score: %llu, diverse score: %lf\n", queue_cur->entry_id, queue_cur->prox_score, queue_cur->diverse_score);
+      if(queue_cur != NULL)
+        LOGF("[DAFL] [seed select] queue_cur: %d, prox score: %llu, diverse score: %lf\n", queue_cur->entry_id, queue_cur->prox_score, queue_cur->diverse_score);
       break;
     case FUZZ_HORIZONTAL_ONLY:
       queue_cur = NULL;
